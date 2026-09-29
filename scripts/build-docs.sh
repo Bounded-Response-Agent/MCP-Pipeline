@@ -58,10 +58,19 @@ build_site() {
 # `dest`. The built tree stays in `worktree/site` afterwards so a caller can
 # mirror it to a second destination.
 build_branch() {
-    local branch="$1" worktree="$2" dest="$3"
+    local branch="$1" worktree="$2" dest="$3" required="${4:-true}"
 
     echo "=== Building docs for ${branch} ==="
-    git fetch origin "$branch"
+    if ! git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1; then
+        if [[ "$required" == "true" ]]; then
+            echo "error: required branch ${branch} not found on origin" >&2
+            return 1
+        fi
+        echo "warning: branch ${branch} not found on origin; skipping docs build" >&2
+        return 0
+    fi
+
+    git fetch origin "refs/heads/${branch}:refs/remotes/origin/${branch}"
     git worktree remove --force "$worktree" 2>/dev/null || true
     rm -rf "$worktree"
     git worktree add --detach "$worktree" "origin/${branch}"
@@ -80,9 +89,9 @@ rm -rf "${OUTPUT_DIR:?}"/*
 # v2 (main) at the root, then mirrored to /v2/ from the same build, then v1
 # under /v1/. The mirror is copied from the worktree's build directory rather
 # than from the root so it never picks up the /v1/ tree.
-build_branch main "$V2_WORKTREE" "$OUTPUT_DIR"
+build_branch main "$V2_WORKTREE" "$OUTPUT_DIR" true
 mkdir -p "$OUTPUT_DIR/v2"
 cp -a "$V2_WORKTREE/site/." "$OUTPUT_DIR/v2/"
-build_branch v1.x "$V1_WORKTREE" "$OUTPUT_DIR/v1"
+build_branch v1.x "$V1_WORKTREE" "$OUTPUT_DIR/v1" false
 
 echo "=== Combined docs built at $OUTPUT_DIR ==="
