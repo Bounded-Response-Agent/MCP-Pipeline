@@ -1,0 +1,2 @@
+hostname,quarantined_at,reason
+ws-bob,2026-09-29T05:48:02+00:00,Denied traffic to db01 from 10.0.30.22 on ports 5432 and 22

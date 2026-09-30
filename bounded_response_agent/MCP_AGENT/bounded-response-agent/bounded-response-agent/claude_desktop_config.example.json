@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "bounded-response-agent": {
+      "command": "/ABSOLUTE/PATH/TO/bounded-response-agent/.venv/bin/python",
+      "args": ["/ABSOLUTE/PATH/TO/bounded-response-agent/server.py"]
+    }
+  }
+}

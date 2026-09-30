@@ -1,0 +1,7 @@
+hostname,ip,role,vlan,in_scope
+web01,10.0.10.5,web-server,10,true
+db01,10.0.20.7,database,20,true
+fw01,10.0.1.1,firewall,1,false
+ws-alice,10.0.30.21,workstation,30,true
+ws-bob,10.0.30.22,workstation,30,true
+core-sw1,10.0.0.2,core-switch,0,false
