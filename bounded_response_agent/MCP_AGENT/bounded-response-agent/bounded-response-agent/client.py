@@ -23,7 +23,7 @@ from mcp.client.stdio import stdio_client
 
 # Google is returning 404 for older models for new accounts; prefer the current
 # model family that is still available, while keeping a small fallback list.
-MODEL_CANDIDATES = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+MODEL_CANDIDATES = ["gemini-3.1-flash-lite", "gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
 SERVER_CMD = sys.executable
 SERVER_ARGS = ["server.py"]
 
