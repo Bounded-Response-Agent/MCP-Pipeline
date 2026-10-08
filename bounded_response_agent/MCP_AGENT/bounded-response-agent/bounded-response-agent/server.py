@@ -1,18 +1,8 @@
-"""Bounded Response Agent MCP server.
-
-Investigation tools (lookup_device, get_events_for_ip, summarize_denied_by_source)
-are unrestricted read access, like a SOC analyst's monitoring dashboard.
-
-The one RESPONSE tool, quarantine_host, is bounded: it will only act on a
-device whose `in_scope` flag is true in the inventory. Devices outside that
-boundary (core infrastructure, firewalls) are visible for investigation but
-the agent refuses to take action on them and says so, modeling an
-access-control boundary between "read" and "act" authority.
-"""
 import csv
 import ipaddress
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TypedDict
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
@@ -25,8 +15,13 @@ ACTIONS_CSV = DATA / "actions_log.csv"
 mcp = MCPServer("bounded-response-agent")
 
 
-def _rows(path: Path) -> list[dict]:
-    with open(path, newline="") as f:
+class SummaryRow(TypedDict):
+    src_ip: str
+    denied: int
+
+
+def _rows(path: Path) -> list[dict[str, str]]:
+    with open(path, encoding="utf-8", newline="") as f:
         return list(csv.DictReader(f))
 
 
@@ -38,7 +33,7 @@ def _valid_ip(ip: str) -> str:
 
 
 @mcp.tool()
-def lookup_device(hostname: str) -> dict:
+def lookup_device(hostname: str) -> dict[str, str]:
     """Look up a device by hostname: IP, role, VLAN, and whether it is inside
     the agent's authorized response scope (in_scope).
 
@@ -52,7 +47,9 @@ def lookup_device(hostname: str) -> dict:
 
 
 @mcp.tool()
-def get_events_for_ip(ip: str, action: str | None = None, limit: int = 20) -> list[dict]:
+def get_events_for_ip(
+    ip: str, action: str | None = None, limit: int = 20
+) -> list[dict[str, str]]:
     """Return firewall log events where the IP is the source or destination.
     Read-only; not restricted by response scope.
 
@@ -73,7 +70,7 @@ def get_events_for_ip(ip: str, action: str | None = None, limit: int = 20) -> li
 
 
 @mcp.tool()
-def summarize_denied_by_source(min_count: int = 1) -> list[dict]:
+def summarize_denied_by_source(min_count: int = 1) -> list[SummaryRow]:
     """Count denied connections per source IP, highest first. Read-only.
 
     Args:
@@ -85,12 +82,16 @@ def summarize_denied_by_source(min_count: int = 1) -> list[dict]:
     for e in _rows(EVENTS_CSV):
         if e["action"] == "deny":
             counts[e["src_ip"]] = counts.get(e["src_ip"], 0) + 1
-    out = [{"src_ip": k, "denied": v} for k, v in counts.items() if v >= min_count]
-    return sorted(out, key=lambda r: -r["denied"])
+    out: list[SummaryRow] = [
+        {"src_ip": source_ip, "denied": denied}
+        for source_ip, denied in counts.items()
+        if denied >= min_count
+    ]
+    return sorted(out, key=lambda row: -row["denied"])
 
 
 @mcp.tool()
-def quarantine_host(hostname: str, reason: str) -> dict:
+def quarantine_host(hostname: str, reason: str) -> dict[str, str]:
     """Quarantine a device (the agent's one RESPONSE action). Bounded: only
     permitted for devices marked in_scope=true in the inventory. Devices
     outside the authorized scope (e.g. core switches, firewalls) are refused
@@ -125,7 +126,7 @@ def quarantine_host(hostname: str, reason: str) -> dict:
         }
 
     ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    with open(ACTIONS_CSV, "a", newline="") as f:
+    with open(ACTIONS_CSV, "a", encoding="utf-8", newline="") as f:
         csv.writer(f).writerow([hostname.strip(), ts, reason.strip()])
 
     return {"status": "quarantined", "hostname": hostname, "quarantined_at": ts, "reason": reason}
