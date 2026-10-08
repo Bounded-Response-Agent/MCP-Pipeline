@@ -42,16 +42,20 @@ echo "hostname,quarantined_at,reason" > data/actions_log.csv
 
 **Option A — your own client (`client.py`, included).** This is the MCP client/host for
 this assignment: it starts `server.py` over stdio, discovers tools via MCP, converts
-their schemas for the Gemini API, sends your goal to Gemini, executes whatever tool
-calls Gemini requests, feeds the results back, and loops until Gemini gives a final
-answer. Requires a Gemini API key:
+their schemas for the OpenAI-compatible chat API, sends your goal to the model, executes
+whatever tool calls it requests, feeds the results back, and loops until it gives a final
+answer. Uses only the Python standard library for the gateway request and requires an
+API key from the course gateway:
 ```
-export GEMINI_API_KEY=...
+export LLM_API_KEY=...
 python client.py "Which source IP has been hitting db01 with denied connections, and can you quarantine it?"
 ```
-It prints every tool call, its arguments, the raw result, and Gemini's final answer — that
-output *is* the demonstration trace, paste it straight into the sections below. Model:
-`gemini-3.8-flash` (change `MODEL` in `client.py` if you use a different one).
+
+The client uses `https://128.171.10.80:9443/v1` by default and starts with the free
+`gpt-oss-120b` model. Set `LLM_BASE_URL` to override the endpoint or `LLM_MODEL` to
+choose another model from the gateway's `/v1/models` list. It prints every tool call,
+its arguments, the raw result, and the model's final answer — that output *is* the
+demonstration trace, paste it straight into the sections below.
 
 **Option B — an existing host (e.g. Claude Desktop).** Copy
 `claude_desktop_config.example.json` into the host's MCP config, replace the placeholder
@@ -78,7 +82,7 @@ python client.py "<prompt>"
 
 The client prints the actual MCP tool name, JSON arguments, returned result, and model
 text. The protocol evidence below was captured with `python verify_tools.py`; it proves
-the same server-side calls and errors independently of an LLM. No `GEMINI_API_KEY` was
+the same server-side calls and errors independently of an LLM. No `LLM_API_KEY` was
 included in this submission, so capture the model-generated final-answer lines by
 running the host and paste them after each trace.
 
