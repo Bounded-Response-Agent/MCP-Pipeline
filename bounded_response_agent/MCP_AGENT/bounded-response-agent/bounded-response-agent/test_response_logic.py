@@ -2,6 +2,7 @@
 
 The ground-truth file is read only by these tests. The agent never sees it.
 """
+
 import json
 import subprocess
 import sys
@@ -131,8 +132,15 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(len(self.s.get_events(limit=3)), 3)
 
     def test_events_bad_inputs(self):
-        for kwargs in ({"host": "db99"}, {"source": "radar"}, {"severity": "huge"}, {"action": "explode"},
-                       {"since": "yesterday"}, {"limit": 0}, {"limit": 500}):
+        for kwargs in (
+            {"host": "db99"},
+            {"source": "radar"},
+            {"severity": "huge"},
+            {"action": "explode"},
+            {"since": "yesterday"},
+            {"limit": 0},
+            {"limit": 500},
+        ):
             with self.assertRaises(ResponseError, msg=str(kwargs)):
                 self.s.get_events(**kwargs)
 
@@ -144,7 +152,9 @@ class AnalysisTests(unittest.TestCase):
         self.assertEqual(before, after)
 
     def test_data_files_are_consistent(self):
-        result = subprocess.run([sys.executable, "-I", str(DATA / "validate_data.py")], capture_output=True, text=True)
+        result = subprocess.run(
+            [sys.executable, "-I", str(DATA / "validate_data.py")], capture_output=True, text=True, encoding="utf-8"
+        )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 

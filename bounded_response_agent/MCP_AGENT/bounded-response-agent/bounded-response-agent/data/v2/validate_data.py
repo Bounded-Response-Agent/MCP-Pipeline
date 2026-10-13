@@ -1,5 +1,8 @@
 """Check that the v2 scenario files agree with each other. Run: python validate_data.py"""
-import csv, json, sys
+
+import csv
+import json
+import sys
 from pathlib import Path
 
 D = Path(__file__).parent
@@ -62,9 +65,13 @@ for name, act in policy["actions"].items():
 truth = json.loads((D / "scenario_ground_truth.json").read_text(encoding="utf-8"))
 for a in truth["expected_recommendation"]["actions"]:
     check(a["action"] in policy["actions"], f"truth: unknown action {a['action']}")
-    pool = {"block_network_flow": flows, "restrict_network_flow": flows, "disable_account": accounts}.get(a["action"], {})
+    pool = {"block_network_flow": flows, "restrict_network_flow": flows, "disable_account": accounts}.get(
+        a["action"], {}
+    )
     check(a["target"] in pool, f"truth: unknown target {a['target']}")
 
 if errors:
-    print("FAILED"); [print(" -", e) for e in errors]; sys.exit(1)
+    print("FAILED")
+    [print(" -", e) for e in errors]
+    sys.exit(1)
 print(f"OK: {len(devices)} devices, {len(accounts)} accounts, {len(flows)} flows, {len(functions)} functions")

@@ -1,5 +1,4 @@
-"""
-MCP client + agent loop for the Bounded Response Agent.
+"""MCP client + agent loop for the Bounded Response Agent.
 
 This is the 'host' for the assignment: it starts server.py over stdio, discovers its
 tools via MCP, hands their schemas to an OpenAI-compatible chat API, and executes
@@ -10,6 +9,7 @@ Usage:
     export LLM_API_KEY=...
     python client.py "The SOC says ws-eng01 may be compromised. What should we do?"
 """
+
 import asyncio
 import json
 import os
@@ -35,10 +35,14 @@ SERVER_ARGS = [str(Path(__file__).parent / SERVER_SCRIPT)]
 SYSTEM_PROMPT = (
     "You are a cyber-response agent for a shipboard enterprise and OT environment. "
     "Use the tools to investigate, check policy, and simulate responses. Recommend the "
-    "least disruptive effective action, and name the approval each step needs. You can "
-    "only analyze and recommend right now; do not claim any action was executed. "
+    "least disruptive effective action. For each action you recommend, call "
+    "request_operator_approval with a short rationale, then wait_for_approval. You cannot "
+    "approve anything yourself; only a human can. Execution tools are not available yet, so "
+    "after approvals come back, say which actions are approved and ready to execute and "
+    "which were denied, refused or still pending. Never claim an action was executed. "
     "Report tool errors honestly."
 )
+MAX_TURNS = int(os.environ.get("BRA_MAX_TURNS", "25"))
 
 
 async def create_completion(messages, tools, model):
@@ -49,7 +53,7 @@ async def create_completion(messages, tools, model):
             "messages": messages,
             "tools": tools,
             "tool_choice": "auto",
-            "max_tokens": 1024,
+            "max_tokens": 2048,
         }
     ).encode("utf-8")
     request = urllib.request.Request(
@@ -70,7 +74,7 @@ async def create_completion(messages, tools, model):
             body = exc.read().decode("utf-8", errors="replace")
             raise RuntimeError(f"LLM gateway returned HTTP {exc.code}: {body}") from exc
         except urllib.error.URLError as exc:
-            raise RuntimeError(f"Could not reach LLM gateway: {exc.reason}") from exc
+            raise RuntimeError(f"Could not reach LLM gateway at {BASE_URL}: {exc.reason}") from exc
 
     return await asyncio.to_thread(send_request)
 
@@ -85,14 +89,14 @@ async def create_completion_with_retry(messages, tools):
             except RuntimeError as exc:
                 last_error = exc
                 message = str(exc).lower()
-                is_transient = any(
-                    marker in message
-                    for marker in ("http 500", "http 503", "temporarily unavailable")
-                )
+                is_transient = any(marker in message for marker in ("http 500", "http 503", "temporarily unavailable"))
                 if not is_transient:
                     raise
-                wait_seconds = min(8, 2 ** attempt)
-                print(f"[client] model '{model}' temporarily unavailable; retrying in {wait_seconds}s (attempt {attempt + 1}/4)")
+                wait_seconds = min(8, 2**attempt)
+                print(
+                    f"[client] model '{model}' temporarily unavailable; "
+                    f"retrying in {wait_seconds}s (attempt {attempt + 1}/4)"
+                )
                 await asyncio.sleep(wait_seconds)
         print(f"[client] model '{model}' failed after retries; trying next candidate")
     raise RuntimeError(f"All configured models failed. Last error: {last_error}")
@@ -113,6 +117,47 @@ def mcp_tools_to_openai(tools) -> list[dict]:
     ]
 
 
+def prompt_operator(text: str) -> None:
+    """If a tool result is a pending approval, ask the human at the keyboard to decide it.
+
+    This is the human channel. It talks to the approval store directly, not through MCP, so
+    the model has no way to trigger or fake a decision.
+    """
+    try:
+        approval = json.loads(text)
+    except ValueError:
+        return
+    if not isinstance(approval, dict) or approval.get("status") != "pending" or "approval_id" not in approval:
+        return
+    from approvals import ApprovalService
+    from response_logic import ResponseError, Scenario
+
+    aid, required = approval["approval_id"], approval["required_role"]
+    print(f"[operator] {aid}: {approval['action']} on {approval['target']} (needs {required})")
+    print(f"[operator] reason: {approval['rationale']}")
+    for change in approval["plan"]["predicted_state_changes"]:
+        print(f"[operator] effect: {change}")
+    print(f"[operator] mission impact: {approval['plan']['mission_severity']}")
+    if not sys.stdin.isatty():
+        print(
+            f"[operator] no keyboard here. Decide with: "
+            f"python operator_console.py approve {aid} --role {required} --name YOU"
+        )
+        return
+    choice = input("[operator] (a)pprove, (d)eny, or (s)kip to decide in another terminal? ").strip().lower()
+    if choice not in ("a", "d"):
+        print("[operator] skipped.")
+        return
+    role = input(f"[operator] Your role [{required}]: ").strip() or required
+    name = input("[operator] Your name [operator]: ").strip() or "operator"
+    note = input("[operator] Note (optional): ").strip() or None
+    try:
+        done = ApprovalService(Scenario()).decide(aid, "approve" if choice == "a" else "deny", role, name, note)
+        print(f"[operator] {aid} is now {done['status']}.\n")
+    except ResponseError as exc:
+        print(f"[operator] could not record the decision: {exc}\n")
+
+
 async def run_agent(goal: str) -> None:
     api_key = os.environ.get("LLM_API_KEY")
     if not api_key:
@@ -130,7 +175,7 @@ async def run_agent(goal: str) -> None:
             if SERVER_SCRIPT == "server.py":
                 messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
 
-            for _ in range(8):  # safety cap on agent loop length
+            for _ in range(MAX_TURNS):  # safety cap on agent loop length
                 response = await create_completion_with_retry(messages, tools)
                 message = response["choices"][0]["message"]
                 if message.get("content") and message["content"].strip():
@@ -150,13 +195,13 @@ async def run_agent(goal: str) -> None:
                     text = " ".join(c.text for c in result.content if hasattr(c, "text"))
                     status = "ERROR" if result.is_error else "ok"
                     print(f"[tool_result:{status}] {text}\n")
+                    if SERVER_SCRIPT == "server.py" and name == "request_operator_approval" and not result.is_error:
+                        prompt_operator(text)
                     messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": call["id"],
-                            "content": json.dumps(
-                                {"result": text, "is_error": result.is_error}
-                            ),
+                            "content": json.dumps({"result": text, "is_error": result.is_error}),
                         }
                     )
 
@@ -165,6 +210,6 @@ async def run_agent(goal: str) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: python client.py \"<goal for the agent>\"")
+        print('Usage: python client.py "<goal for the agent>"')
         sys.exit(1)
     asyncio.run(run_agent(sys.argv[1]))

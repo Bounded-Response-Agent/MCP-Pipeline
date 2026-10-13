@@ -4,7 +4,7 @@ Replaces the toy inventory with a model the response agent can reason about. The
 `data/*.csv` files are untouched; the current `server.py` still reads those.
 
 | File | Role |
-|---|---|
+| --- | --- |
 | `findings.json` | Output of the SOC Investigation Agent: claims, confidence, evidence |
 | `devices.csv` | Inventory with zone, criticality, and a `protected` flag |
 | `accounts.csv` | Users and service accounts, privilege, and what depends on them |
@@ -18,6 +18,7 @@ Replaces the toy inventory with a model the response agent can reason about. The
 | `validate_data.py` | Cross-file consistency check |
 
 ## The scenario
+
 `ws-eng01` is compromised and beaconing out (F004), trying to move laterally (F005, F006), and
 holds a stolen `eng.mokoa` token. It also runs the cooling telemetry poller. Isolating it
 stops the spread but opens a telemetry gap longer than the 120 s limit, unless

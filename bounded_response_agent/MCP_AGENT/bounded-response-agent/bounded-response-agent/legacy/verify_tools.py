@@ -1,8 +1,12 @@
 """Legacy demo: protocol-level check of the original four tools over stdio (no LLM).
 Run from the project folder: python legacy/verify_tools.py
 Then reset the log: python reset_demo.py"""
-import asyncio, sys, json
+
+import asyncio
+import json
+import sys
 from pathlib import Path
+
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -17,6 +21,7 @@ CALLS = [
     ("get_events_for_ip", {"ip": "999.1.1.1"}),
 ]
 
+
 async def main():
     params = StdioServerParameters(command=sys.executable, args=[str(Path(__file__).with_name("server.py"))])
     async with stdio_client(params) as (r, w):
@@ -28,5 +33,6 @@ async def main():
                 res = await s.call_tool(name, args)
                 text = " ".join(c.text for c in res.content if hasattr(c, "text"))
                 print(f"\n{name}({json.dumps(args)}) is_error={res.is_error}\n  {text[:300]}")
+
 
 asyncio.run(main())
