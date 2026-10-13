@@ -1,135 +1,181 @@
-import csv
-import ipaddress
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import TypedDict
+"""Bounded Response Agent MCP server (step 2: read and analysis tools).
+
+All tools here are read-only. They explain the situation, check policy, and predict mission
+impact so the agent can recommend the least disruptive effective response. The analysis logic
+lives in response_logic.py so it can be tested without the MCP package. Tools that change
+state (approval, execution, verification, rollback) come in later steps.
+
+The previous quarantine demo is kept in legacy/.
+"""
+from typing import Any
 
 from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
-DATA = Path(__file__).parent / "data"
-DEVICES_CSV = DATA / "devices.csv"
-EVENTS_CSV = DATA / "events.csv"
-ACTIONS_CSV = DATA / "actions_log.csv"
+from response_logic import ResponseError, Scenario
 
 mcp = MCPServer("bounded-response-agent")
+scenario = Scenario()
 
 
-class SummaryRow(TypedDict):
-    src_ip: str
-    denied: int
-
-
-def _rows(path: Path) -> list[dict[str, str]]:
-    with open(path, encoding="utf-8", newline="") as f:
-        return list(csv.DictReader(f))
-
-
-def _valid_ip(ip: str) -> str:
+def _run(fn, *args, **kwargs):
+    """Call scenario logic and surface ResponseError messages to the model."""
     try:
-        return str(ipaddress.ip_address(ip.strip()))
-    except ValueError:
-        raise ToolError(f"'{ip}' is not a valid IP address.")
+        return fn(*args, **kwargs)
+    except ResponseError as exc:
+        raise ToolError(str(exc)) from exc
+
+
+@mcp.tool()
+def get_investigation_findings(case_id: str | None = None) -> dict[str, Any]:
+    """Return the SOC Investigation Agent's findings: claims, confidence, evidence, and the
+    assets, accounts and flows each finding concerns. Read-only.
+
+    Args:
+        case_id: Optional case id, e.g. 'CASE-2026-1012-001'.
+    """
+    return _run(scenario.get_investigation_findings, case_id)
+
+
+@mcp.tool()
+def get_response_policy(action: str | None = None) -> dict[str, Any]:
+    """Return the response policy: for each action its disruption rank, required approval
+    role, forbidden conditions, preconditions and rollback. Pass an action for just that one.
+    Read-only.
+
+    Args:
+        action: Optional. One of continue_monitoring, block_network_flow,
+            restrict_network_flow, disable_account, failover_to_backup, isolate_endpoint.
+    """
+    return _run(scenario.get_response_policy, action)
 
 
 @mcp.tool()
 def lookup_device(hostname: str) -> dict[str, str]:
-    """Look up a device by hostname: IP, role, VLAN, and whether it is inside
-    the agent's authorized response scope (in_scope).
+    """Look up a device: IP, role, zone, criticality and whether it is protected
+    (protected devices must never be acted on by the agent). Read-only.
 
     Args:
-        hostname: Exact hostname, e.g. 'ws-bob'.
+        hostname: Exact hostname, e.g. 'ws-eng01'.
     """
-    for d in _rows(DEVICES_CSV):
-        if d["hostname"] == hostname.strip():
-            return d
-    raise ToolError(f"No device named '{hostname}'. Use list_devices-style lookup with a valid hostname.")
+    return _run(scenario.lookup_device, hostname)
 
 
 @mcp.tool()
-def get_events_for_ip(
-    ip: str, action: str | None = None, limit: int = 20
+def lookup_account(account: str) -> dict[str, str]:
+    """Look up an account: type, privilege, bound hosts, the function it serves and whether
+    the agent may revoke it. Read-only.
+
+    Args:
+        account: Exact account name, e.g. 'eng.mokoa'.
+    """
+    return _run(scenario.lookup_account, account)
+
+
+@mcp.tool()
+def get_network_flows(host: str | None = None) -> list[dict[str, str]]:
+    """List network flows (id, source, destination, port, purpose, status, whether mission
+    critical). Pass a host to see only flows that start or end there. Read-only.
+
+    Args:
+        host: Optional hostname filter.
+    """
+    return _run(scenario.get_network_flows, host)
+
+
+@mcp.tool()
+def get_system_health(system: str | None = None) -> list[dict[str, str]]:
+    """Return health telemetry (metric, value, normal range, status). Pass a system to see
+    only that one. Read-only.
+
+    Args:
+        system: Optional hostname, e.g. 'backup-mon01'.
+    """
+    return _run(scenario.get_system_health, system)
+
+
+@mcp.tool()
+def get_events(
+    host: str | None = None,
+    source: str | None = None,
+    severity: str | None = None,
+    action: str | None = None,
+    since: str | None = None,
+    limit: int = 50,
 ) -> list[dict[str, str]]:
-    """Return firewall log events where the IP is the source or destination.
-    Read-only; not restricted by response scope.
+    """Return the event timeline behind the findings (EDR, firewall and identity events),
+    oldest first, with optional filters. Read-only.
 
     Args:
-        ip: IPv4/IPv6 address to search for.
-        action: Optional filter, 'allow' or 'deny'.
-        limit: Max events to return (1-100).
+        host: Hostname or IP that is the source or destination of the event.
+        source: 'edr', 'firewall' or 'idp'.
+        severity: 'info', 'medium' or 'high'.
+        action: 'allow', 'deny' or 'alert'.
+        since: ISO timestamp, only events at or after it, e.g. '2026-10-12T21:00:00Z'.
+        limit: Maximum events to return (1-200).
     """
-    ip = _valid_ip(ip)
-    if action is not None and action not in ("allow", "deny"):
-        raise ToolError("action must be 'allow' or 'deny'.")
-    if not 1 <= limit <= 100:
-        raise ToolError("limit must be between 1 and 100.")
-    ev = [e for e in _rows(EVENTS_CSV) if ip in (e["src_ip"], e["dst_ip"])]
-    if action:
-        ev = [e for e in ev if e["action"] == action]
-    return ev[:limit]
+    return _run(scenario.get_events, host, source, severity, action, since, limit)
 
 
 @mcp.tool()
-def summarize_denied_by_source(min_count: int = 1) -> list[SummaryRow]:
-    """Count denied connections per source IP, highest first. Read-only.
+def get_mission_dependencies(function_id: str | None = None) -> list[dict[str, Any]]:
+    """Return mission functions and what each depends on (devices, flows, accounts, primary
+    or backup), plus safety flag, maximum tolerable telemetry gap and backup readiness.
+    Read-only.
 
     Args:
-        min_count: Only include sources with at least this many denies (>=1).
+        function_id: Optional, e.g. 'cooling_monitoring'.
     """
-    if min_count < 1:
-        raise ToolError("min_count must be >= 1.")
-    counts: dict[str, int] = {}
-    for e in _rows(EVENTS_CSV):
-        if e["action"] == "deny":
-            counts[e["src_ip"]] = counts.get(e["src_ip"], 0) + 1
-    out: list[SummaryRow] = [
-        {"src_ip": source_ip, "denied": denied}
-        for source_ip, denied in counts.items()
-        if denied >= min_count
-    ]
-    return sorted(out, key=lambda row: -row["denied"])
+    return _run(scenario.get_mission_dependencies, function_id)
 
 
 @mcp.tool()
-def quarantine_host(hostname: str, reason: str) -> dict[str, str]:
-    """Quarantine a device (the agent's one RESPONSE action). Bounded: only
-    permitted for devices marked in_scope=true in the inventory. Devices
-    outside the authorized scope (e.g. core switches, firewalls) are refused
-    and must be escalated to a senior analyst instead.
+def analyze_mission_impact(
+    action: str, target: str | None = None, assume_done: list[str] | None = None
+) -> dict[str, Any]:
+    """Predict which mission functions an action would interrupt and for how long, compared
+    with each function's maximum tolerable gap. Read-only; nothing is executed.
 
     Args:
-        hostname: Exact hostname to quarantine.
-        reason: Short justification, e.g. 'repeated deny hits from ws-bob'.
+        action: A response action name from get_response_policy.
+        target: Flow id, account, device or function id the action applies to.
+        assume_done: Optional earlier steps to assume complete, such as
+            ['failover_to_backup:cooling_monitoring'], to evaluate a sequence.
     """
-    if not reason or not reason.strip():
-        raise ToolError("reason is required and cannot be empty.")
+    return _run(scenario.analyze_mission_impact, action, target, assume_done)
 
-    devices = _rows(DEVICES_CSV)
-    device = next((d for d in devices if d["hostname"] == hostname.strip()), None)
-    if device is None:
-        raise ToolError(f"No device named '{hostname}'. Cannot quarantine an unknown host.")
 
-    if device["in_scope"].strip().lower() != "true":
-        raise ToolError(
-            f"'{hostname}' ({device['role']}, VLAN {device['vlan']}) is outside this agent's "
-            "authorized response scope. Refusing to act. Escalate to a senior analyst for "
-            "manual containment."
-        )
+@mcp.tool()
+def simulate_response(
+    action: str, target: str | None = None, assume_done: list[str] | None = None
+) -> dict[str, Any]:
+    """Dry run of one response action: policy check, preconditions, supporting evidence,
+    mission impact, required approval level and a verdict (allowed, forbidden,
+    insufficient_evidence, unacceptable_impact, preconditions_not_met). Read-only; nothing
+    is executed and no approval is requested.
 
-    already = [r for r in _rows(ACTIONS_CSV) if r["hostname"] == hostname.strip()]
-    if already:
-        return {
-            "status": "already_quarantined",
-            "hostname": hostname,
-            "quarantined_at": already[-1]["quarantined_at"],
-            "reason": already[-1]["reason"],
-        }
+    Args:
+        action: A response action name from get_response_policy.
+        target: Flow id, account, device or function id the action applies to.
+        assume_done: Optional earlier steps to assume complete, such as
+            ['failover_to_backup:cooling_monitoring'], to evaluate a sequence.
+    """
+    return _run(scenario.simulate_response, action, target, assume_done)
 
-    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    with open(ACTIONS_CSV, "a", encoding="utf-8", newline="") as f:
-        csv.writer(f).writerow([hostname.strip(), ts, reason.strip()])
 
-    return {"status": "quarantined", "hostname": hostname, "quarantined_at": ts, "reason": reason}
+@mcp.tool()
+def list_response_options(
+    case_id: str | None = None, assume_done: list[str] | None = None
+) -> dict[str, Any]:
+    """Simulate every candidate response for the open case, ranked from least to most
+    disruptive, and report which threat findings only a blocked option could address.
+    Read-only.
+
+    Args:
+        case_id: Optional case id.
+        assume_done: Optional earlier steps to assume complete.
+    """
+    return _run(scenario.list_response_options, case_id, assume_done)
 
 
 if __name__ == "__main__":

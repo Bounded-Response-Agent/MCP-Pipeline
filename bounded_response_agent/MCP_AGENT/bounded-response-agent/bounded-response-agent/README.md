@@ -1,219 +1,135 @@
 # Bounded Response Agent
 
-## Project description
-A small SOC (security operations center) assistant for a junior analyst. It can freely
-investigate the network — look up devices and read firewall logs — but it is *bounded*
-when it comes to taking action: it will only quarantine a host if that host is inside its
-authorized response scope (`in_scope=true` in the inventory). Core infrastructure and
-firewalls are outside that scope; the agent must refuse and say to escalate instead of
-acting. This models the access-control idea that read authority and act authority can be
-different boundaries, even for the same agent.
+## What this is
+A cyber-response agent that proposes containment actions in a simulated shipboard
+enterprise and OT environment, and is *bounded*: policy, mission impact and human approval
+decide what it may do, not the model. The goal is to contain an attack without causing
+unacceptable mission or safety consequences.
 
-Data: `data/devices.csv` (a small inventory with an `in_scope` flag per device) and
-`data/events.csv` (a firewall log). `data/actions_log.csv` ships with only its header
-and records quarantine actions taken during a session.
+**Scenario (`data/v2/`).** The SOC Investigation Agent reports that engineering workstation
+`ws-eng01` is very likely compromised. It beacons to an external host, moved 310 MB out,
+tries to spread over SMB and RDP, and holds a stolen `eng.mokoa` credential. It also runs
+the polling client for shipboard cooling monitoring. Isolating it would stop the spread but
+open a telemetry gap longer than the 120 s limit, unless monitoring is first failed over to
+the standby `backup-mon01`. The agent must compare the options and recommend the least
+disruptive effective one.
 
-A task that needs multiple tools: "investigate this IP's denied traffic, find out which
-host it is, and quarantine it if you're allowed to" — one tool's output (the denied
-source IP, or the resolved hostname) feeds the next tool's input.
+## Status
+| Step | Capability | State |
+|---|---|---|
+| 1 | Scenario data, policy model | Done (`data/v2/`) |
+| 2 | Read and analysis tools: policy, mission impact, dry-run simulation | **Done (this version)** |
+| 3 | Approval requests and audit log | Planned |
+| 4 | Execution tools, post-action verification, rollback | Planned |
+| 5 | Full demo traces and tests for the refusal and rollback paths | Planned |
+
+All tools are read-only today. The agent can recommend; it cannot execute anything yet.
+
+The original quarantine-only demo is kept in [`legacy/`](legacy/README.md).
 
 ## Tools
-| Tool | Purpose | Bounded? | Validation |
-|---|---|---|---|
-| `lookup_device(hostname)` | Hostname -> IP, role, VLAN, in_scope | No (read) | Unknown host -> error |
-| `get_events_for_ip(ip, action?, limit=20)` | Firewall events for an IP | No (read) | Valid IP, action in {allow, deny}, 1<=limit<=100 |
-| `summarize_denied_by_source(min_count=1)` | Denied-connection counts per source IP | No (read) | min_count >= 1 |
-| `quarantine_host(hostname, reason)` | The one response action: quarantine a device | **Yes** | Unknown host -> error; out-of-scope host -> refused with escalation message; empty reason -> error; repeat call -> idempotent, returns the original record instead of double-acting |
+| Tool | Purpose |
+|---|---|
+| `get_investigation_findings` | The SOC findings: claims, confidence, evidence, affected assets, accounts and flows |
+| `get_response_policy` | Per-action disruption rank, approval role, forbidden conditions, preconditions, rollback |
+| `get_events` | The event timeline behind the findings (EDR, firewall, identity), filterable by host, source, severity, action and time |
+| `lookup_device`, `lookup_account` | Inventory facts, including `protected` and `revocable_by_agent` |
+| `get_network_flows` | Flows with purpose, status and whether mission critical |
+| `get_system_health` | Telemetry used for preconditions |
+| `get_mission_dependencies` | What each mission function needs, primary or backup, plus its gap limit |
+| `analyze_mission_impact` | Predicts which functions an action interrupts and for how long |
+| `simulate_response` | Dry run: policy, preconditions, evidence, impact, approval level and a verdict |
+| `list_response_options` | Simulates every candidate, ranked least to most disruptive, and reports threats only a blocked option could address |
 
-Errors are raised as `ToolError` (not plain `ValueError`) so the message reaches the
-calling model — in SDK 2.x a plain `ValueError` is otherwise masked as a generic
-"Error executing tool".
+`simulate_response` verdicts: `allowed`, `forbidden`, `insufficient_evidence`,
+`unacceptable_impact`, `preconditions_not_met`. `assume_done` (for example
+`["failover_to_backup:cooling_monitoring"]`) lets the agent evaluate a sequence, such as
+failover first and then isolation.
+
+Errors are raised as `ToolError` so the message reaches the model.
+
+## Layout
+- `server.py`: MCP server exposing the tools.
+- `response_logic.py`: the analysis logic, plain Python so it is testable without MCP.
+- `client.py`: the MCP host and agent loop (OpenAI-compatible gateway).
+- `data/v2/`: scenario files. `scenario_ground_truth.json` is for tests only; the agent never reads it.
+- `test_response_logic.py`: unit tests. `verify_tools.py`: protocol check over MCP, no LLM.
+- `legacy/`: the original demo.
 
 ## Setup
-Requires Python 3.10 or newer. From this project folder, create a virtual environment
-and install the pinned MCP dependency.
+Requires Python 3.10 or newer. From this folder, create a virtual environment and install
+the pinned MCP dependency.
 
 **Windows (PowerShell):**
 ```
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe verify_tools.py
 ```
 
 **macOS / Linux:**
 ```
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
+```
+
+## Check it works
+```
+# Windows (PowerShell)
+.\.venv\Scripts\python.exe -m unittest -v test_response_logic   # logic tests, no MCP needed
+.\.venv\Scripts\python.exe verify_tools.py                      # every tool over MCP, no LLM
+
+# macOS / Linux
+.venv/bin/python -m unittest -v test_response_logic
 .venv/bin/python verify_tools.py
 ```
 
-To restore the clean demo state before repeating a run, use `reset_demo.py`. This
-explicitly resets the simulated action log; it does not run automatically. The
-`verify_tools.py` protocol check calls `quarantine_host`, so run the reset command
-after that check and before starting a fresh demo.
-
-```
-# Windows (PowerShell)
-.\.venv\Scripts\python.exe reset_demo.py
-
-# macOS / Linux
-.venv/bin/python reset_demo.py
-```
-
-**No external MCP host is required.** The included `client.py` is the project's own
-MCP host: it starts `server.py`, discovers the tools, sends the user's request to the
-configured LLM gateway, runs the requested tool calls, and returns their results to the
-model. VS Code and Claude Desktop are optional ways to connect to the same server; they
-are not required to run the project.
-
-**Primary run — included client (`client.py`).** This is the MCP client/host for
-this assignment: it starts `server.py` over stdio, discovers tools via MCP, converts
-their schemas for the OpenAI-compatible chat API, sends your goal to the model, executes
-whatever tool calls it requests, feeds the results back, and loops until it gives a final
-answer. Uses only the Python standard library for the gateway request and requires an
-API key from the course gateway:
-Set the course gateway key in your shell. The project does not include an API key.
+## Run the agent
+Set the course gateway key in your shell. The project does not include a key. The client
+uses `https://128.171.10.83:9443/v1` by default; set `LLM_BASE_URL` to override it and
+`LLM_MODEL` to choose another model. It prints every tool call, its arguments, the raw
+result and the final answer.
 
 ```
 # Windows (PowerShell)
 $env:LLM_API_KEY = "your-course-gateway-key"
-.\.venv\Scripts\python.exe client.py "Which source IP has been hitting db01 with denied connections, and can you quarantine it?"
+.\.venv\Scripts\python.exe client.py "The SOC says ws-eng01 may be compromised. What should we do?"
 
 # macOS / Linux
 export LLM_API_KEY="your-course-gateway-key"
-.venv/bin/python client.py "Which source IP has been hitting db01 with denied connections, and can you quarantine it?"
+.venv/bin/python client.py "The SOC says ws-eng01 may be compromised. What should we do?"
 ```
 
-The client uses `https://128.171.10.83:9443/v1` by default and starts with the free
-`gpt-oss-120b` model. Set `LLM_BASE_URL` to override the endpoint or `LLM_MODEL` to
-choose another model from the gateway's `/v1/models` list. It prints every tool call,
-its arguments, the raw result, and the model's final answer — that output *is* the
-demonstration trace, paste it straight into the sections below.
+Other prompts to try:
+- "Should we isolate ws-eng01 right now?" (expect: not yet, failover first)
+- "What if we fail over cooling monitoring first, then isolate ws-eng01?"
+- "Disable the adm.kealoha account." (expect: refused, escalate)
+- "Block the cooling telemetry flow F001." (expect: refused, mission critical)
 
-**Optional alternative — an existing host (e.g. Claude Desktop).** Copy
-`claude_desktop_config.example.json` into the host's MCP config, replace the placeholder
-paths with absolute paths on your machine, restart the host, and run the same three
-prompts there instead.
+VS Code (`.vscode/mcp.json`) and Claude Desktop (`claude_desktop_config.example.json`) can
+also connect to `server.py`. The VS Code config uses the Windows project virtual
+environment; change `command` to `${workspaceFolder}/.venv/bin/python` on macOS or Linux.
 
-**Optional alternative — VS Code with GitHub Copilot.** This project includes
-`.vscode/mcp.json`, configured to use the project-local Windows virtual environment.
-Open this folder as the VS Code workspace, trust the MCP server if prompted, and use
-Copilot Chat in **Agent** mode. Run **MCP: List Servers** from the Command Palette;
-`bounded-response-agent` should be running with all four tools listed. On macOS or
-Linux, change the config's `command` to `${workspaceFolder}/.venv/bin/python` after
-creating the virtual environment.
+## Demonstration plan
+1. **Least disruptive effective response.** Investigate, simulate, reject isolation because of the cooling gap, recommend block F004, restrict F005 and F006, disable `eng.mokoa`.
+2. **Contingency.** Failover with supervisor approval, verify, then isolate `ws-eng01`.
+3. **Refusals.** Protected device, privileged account, mission-critical flow, no approval.
+4. **Rollback.** An action fails verification or is reversed.
 
-## Demonstration traces (fresh conversation each, same config)
-Reset the action log before run A, then run each prompt in a fresh conversation:
+Demos 1 and 2 can be shown as recommendations now. Demos 3 and 4 need steps 3 and 4.
+Capture real traces by running the client; do not paste illustrative output as captured.
 
-```
-# Windows (PowerShell)
-.\.venv\Scripts\python.exe reset_demo.py
-.\.venv\Scripts\python.exe client.py "<prompt>"
+## Architecture
+The MCP server owns the data and the rules. It loads the findings, inventory, flows,
+mission dependencies, health telemetry and policy, and exposes read and analysis tools.
+Authority lives there: simulation marks a protected device, a privileged account or a
+mission-critical flow as forbidden whatever the model asks, and later steps will enforce
+approval and verification the same way. The client is the host. It starts the server over
+stdio, discovers the tools, passes their JSON schemas to the model, runs the calls the model
+requests, and feeds the results back until the model answers. The model reads the goal,
+chooses tools, reads each result before the next call, and writes the recommendation.
+The model proposes; the server decides.
 
-# macOS / Linux
-.venv/bin/python reset_demo.py
-.venv/bin/python client.py "<prompt>"
-```
-
-The client prints the MCP tool name, JSON arguments, returned result, and model text.
-The protocol evidence below was captured with `verify_tools.py` and shows the
-server-side calls and errors independently of an LLM. The final-answer text is
-illustrative; capture actual model output by running the client with your gateway key.
-
-**A. Successful task, dependent tool calls.**
-Prompt: "Which source IP has been hitting db01 with denied connections, and can you
-quarantine it?"
-Expected shape: `lookup_device("db01")` -> `get_events_for_ip(ip="10.0.20.7", action="deny")`
-or `summarize_denied_by_source` -> `lookup_device("ws-bob")` ->
-`quarantine_host("ws-bob", reason)`.
-
-Verified MCP call evidence:
-
-```text
-lookup_device({"hostname":"db01"}) -> {"hostname":"db01","ip":"10.0.20.7","role":"database","vlan":"20","in_scope":"true"}
-get_events_for_ip({"ip":"10.0.20.7","action":"deny"}) -> four denied events from 10.0.30.22
-lookup_device({"hostname":"ws-bob"}) -> {"ip":"10.0.30.22","in_scope":"true",...}
-quarantine_host({"hostname":"ws-bob","reason":"repeated deny hits to db01"}) -> status=quarantined
-```
-
-Illustrative final answer (not a captured model run):
-
-```text
-Source IP: 10.0.30.22
-Responsible host: ws-bob (in scope)
-
-ws-bob generated denied traffic to db01 on ports 5432 and 22. It has been quarantined successfully.
-```
-
-**B. Different request, different tool combination.**
-Prompt: "Is core-sw1 seeing any denied traffic, and would you be able to quarantine it if
-needed?"
-Expected shape: `lookup_device(core-sw1)` -> `get_events_for_ip` -> an attempted
-`quarantine_host(core-sw1, ...)` that is refused for being out of scope, with the
-assistant relaying the escalation message rather than claiming success.
-
-Verified MCP call evidence:
-
-```text
-lookup_device({"hostname":"core-sw1"}) -> {"ip":"10.0.0.2","role":"core-switch","vlan":"0","in_scope":"false"}
-get_events_for_ip({"ip":"10.0.0.2"}) -> []
-quarantine_host({"hostname":"core-sw1","reason":"test out-of-scope refusal"}) -> ERROR: outside authorized response scope; escalate to a senior analyst
-```
-
-Illustrative final answer (not a captured model run):
-
-```text
-core-sw1 has no denied firewall events. It is a core switch and outside the agent's quarantine scope, so it was not quarantined; escalate to a senior analyst if containment is required.
-```
-
-**C. Invalid input / failed call, handled without inventing success.**
-Prompt: "Quarantine the host printer07, it looks suspicious."
-Expected shape: `quarantine_host(printer07, ...)` (or a `lookup_device` first) returns a
-"no device named" error; the assistant reports that printer07 isn't in the inventory and
-does not claim it was quarantined.
-
-Verified MCP call evidence:
-
-```text
-lookup_device({"hostname":"printer07"}) -> ERROR: No device named 'printer07'
-```
-
-Illustrative final answer (not a captured model run):
-
-```text
-Unable to quarantine printer07: it is not present in the authorized device inventory, so no action was taken.
-```
-
-## Architecture (150-250 words)
-The MCP server owns the security data and the operations that may be performed on it. It
-loads the device inventory and firewall events, validates typed tool arguments, exposes
-the investigation tools, and enforces the response boundary inside `quarantine_host`.
-That rule is authoritative: the server refuses out-of-scope infrastructure even if the
-model requests the action. The MCP client is the host application. It starts the server
-over stdio, initializes an MCP session, discovers the available tools and JSON schemas,
-translates those schemas for Gemini, and sends the user's goal to the model. When Gemini
-returns a function call, the client invokes that named tool through MCP, prints the
-result, and sends the result back into the conversation. It repeats this loop until the
-model produces a final response. The LLM interprets the natural-language goal, chooses
-a tool and arguments, reads returned data, decides whether another call is needed, and
-composes the final answer. In run A, for example, the model can use the database and
-denied-event results to select the workstation for quarantine.
-
-One limitation observed is that the server's scope is a single boolean per device. It
-can distinguish readable and actionable devices, but cannot express finer permissions
-such as allowing event collection while forbidding only one kind of response action.
-Cover: what the MCP server owns (tool implementations, data, the scope/validation rules),
-what the MCP client does (the host app: discovers tools via MCP, sends the schema to the
-model, executes whichever calls the model requests, returns results to the model), and
-what the LLM does (reads the user's goal, decides which tools to call and in what order,
-reads each result before deciding the next call, composes the final answer). Note that
-tool authority (like the in_scope boundary) is enforced by the server, not by asking the
-model nicely — the model can request `quarantine_host` on anything, but only the server
-decides whether it happens.
-
-## Limitation observed
-The model may call `quarantine_host` directly when a hostname is already present in the
-prompt instead of first calling `lookup_device`. This is acceptable because the server
-performs the authoritative existence and scope checks, but it can make the investigation
-trace less informative than a cautious analyst workflow.
+## Known limitations
+- Policy is data in `policy.json`, and the evidence rule is simple: an action needs a threat finding at or above the confidence threshold that names its target.
+- Impact analysis treats a restricted flow like a blocked one (worst case) and reports an unbounded gap until failover completes, since failover needs supervisor approval.
+- Scenario names and IPs are invented.

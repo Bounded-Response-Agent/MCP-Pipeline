@@ -48,6 +48,7 @@ for r in rows("events.csv"):
         check(not r[k] or r[k] in devices or r[k].count(".") == 3, f"event: unknown {k} {r[k]}")
 findings = json.loads((D / "findings.json").read_text(encoding="utf-8"))
 for fd in findings["findings"]:
+    check(fd.get("kind") in ("threat", "assessment"), f"{fd['id']}: kind must be threat or assessment")
     for h in fd.get("affected_assets", []):
         check(h in devices, f"{fd['id']}: unknown asset {h}")
     for a in fd.get("affected_accounts", []):
