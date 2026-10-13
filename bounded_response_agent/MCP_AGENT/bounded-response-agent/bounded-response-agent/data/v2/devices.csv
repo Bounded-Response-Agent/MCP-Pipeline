@@ -1,0 +1,12 @@
+hostname,ip,role,zone,criticality,protected,primary_account,notes
+ws-eng01,10.20.30.11,engineering-workstation,eng-it,high,false,eng.mokoa,Runs the cooling telemetry polling client; suspected compromised
+ws-eng02,10.20.30.12,engineering-workstation,eng-it,medium,false,eng.palakiko,Peer engineering workstation
+ws-ops01,10.20.31.5,operations-workstation,ops-it,medium,false,ops.nakamura,Bridge watchstander terminal
+jump01,10.20.40.5,jump-host,eng-it,high,false,,Gateway from IT into the OT DMZ
+dc01,10.20.1.10,domain-controller,core,critical,true,,Identity infrastructure; escalate only
+fw01,10.20.0.1,firewall,core,critical,true,,Perimeter and zone firewall; escalate only
+core-sw1,10.20.0.2,core-switch,core,critical,true,,Core network; escalate only
+hist01,10.30.20.5,historian,ot-dmz,high,false,,OPC UA historian for cooling and propulsion data
+backup-mon01,10.30.20.9,monitoring-station,ot-dmz,high,false,svc-backup-mon,Warm standby for cooling monitoring
+hmi-cool01,10.30.10.5,ot-hmi,ot-cooling,critical,true,,Local cooling HMI; safety system adjacent
+plc-cool01,10.30.10.10,plc,ot-cooling,critical,true,,Cooling loop controller; never touched by this agent

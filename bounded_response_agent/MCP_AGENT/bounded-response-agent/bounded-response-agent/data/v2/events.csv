@@ -1,0 +1,17 @@
+timestamp,source,src,dst,dst_port,action,severity,detail
+2026-10-12T20:55:10Z,edr,ws-eng01,,,alert,medium,Unsigned binary spawned from a PDF reader process
+2026-10-12T20:56:02Z,edr,ws-eng01,,,alert,high,Credential dumping behavior against LSASS by the same process
+2026-10-12T21:00:03Z,firewall,ws-eng01,198.51.100.77,443,allow,high,First beacon to a newly seen external host
+2026-10-12T21:05:03Z,firewall,ws-eng01,198.51.100.77,443,allow,high,Periodic beacon at 5 minute interval
+2026-10-12T21:10:03Z,firewall,ws-eng01,198.51.100.77,443,allow,high,Periodic beacon at 5 minute interval
+2026-10-12T21:12:40Z,firewall,ws-eng01,198.51.100.77,443,allow,high,Outbound transfer of 310 MB
+2026-10-12T21:15:21Z,firewall,ws-eng01,ws-eng02,445,deny,medium,SMB connection attempt blocked
+2026-10-12T21:15:22Z,firewall,ws-eng01,ws-eng02,445,deny,medium,SMB connection attempt blocked
+2026-10-12T21:18:09Z,idp,ws-eng01,dc01,88,allow,medium,Kerberos ticket request for eng.mokoa from an unusual process
+2026-10-12T21:20:44Z,firewall,ws-eng01,jump01,3389,allow,high,RDP session opened using eng.mokoa
+2026-10-12T21:21:30Z,idp,jump01,dc01,88,deny,medium,Six failed logins for adm.kealoha from jump01
+2026-10-12T21:30:05Z,firewall,ws-eng01,plc-cool01,502,allow,info,Normal cooling telemetry poll by svc-cool-poll
+2026-10-12T21:30:07Z,firewall,ws-eng01,hist01,4840,allow,info,Normal historian write by svc-cool-poll
+2026-10-12T21:30:09Z,firewall,backup-mon01,plc-cool01,502,allow,info,Standby poll test succeeded
+2026-10-12T21:31:15Z,firewall,ws-eng02,hist01,4840,allow,info,Normal engineering historian read
+2026-10-12T21:33:00Z,firewall,ws-ops01,hist01,4840,allow,info,Normal operations dashboard read

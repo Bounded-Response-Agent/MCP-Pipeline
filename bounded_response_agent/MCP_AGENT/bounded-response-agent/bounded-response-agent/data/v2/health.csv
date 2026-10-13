@@ -1,0 +1,11 @@
+timestamp,system,metric,value,unit,normal_min,normal_max,status
+2026-10-12T21:40:00Z,plc-cool01,coolant_supply_temp,7.2,C,5,9,ok
+2026-10-12T21:40:00Z,plc-cool01,coolant_flow,412,L/min,380,450,ok
+2026-10-12T21:40:00Z,ws-eng01,telemetry_poll_age,2,s,0,10,ok
+2026-10-12T21:40:00Z,ws-eng01,cpu_load,78,percent,0,60,warning
+2026-10-12T21:40:00Z,ws-eng01,outbound_traffic,42,Mbps,0,5,warning
+2026-10-12T21:40:00Z,backup-mon01,sync_lag,4,s,0,15,ok
+2026-10-12T21:40:00Z,backup-mon01,standby_poll_test,pass,,,,ok
+2026-10-12T21:40:00Z,hist01,replication_lag,3,s,0,20,ok
+2026-10-12T21:40:00Z,hmi-cool01,telemetry_age,2,s,0,10,ok
+2026-10-12T21:40:00Z,jump01,failed_logins_10m,6,count,0,3,warning

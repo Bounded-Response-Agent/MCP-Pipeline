@@ -1,0 +1,3 @@
+function_id,name,safety_critical,max_tolerable_gap_s,primary_asset,backup_asset,backup_ready,failover_time_s,notes
+cooling_monitoring,Shipboard cooling system monitoring,true,120,ws-eng01,backup-mon01,true,45,Loss of telemetry beyond the gap limit raises a safety alarm
+engineering_config,Engineering configuration and PLC logic maintenance,false,86400,ws-eng01,,false,0,Can be offline for a day without safety effect

@@ -1,0 +1,12 @@
+function_id,requires_type,requires_id,role,note
+cooling_monitoring,device,ws-eng01,primary,Runs the polling client
+cooling_monitoring,flow,F001,primary,Modbus telemetry from the PLC
+cooling_monitoring,flow,F002,primary,Historian writes
+cooling_monitoring,account,svc-cool-poll,primary,Service identity for polling
+cooling_monitoring,device,backup-mon01,backup,Warm standby
+cooling_monitoring,flow,F008,backup,Standby polling path
+cooling_monitoring,account,svc-backup-mon,backup,Standby identity
+cooling_monitoring,device,plc-cool01,shared,Data source
+cooling_monitoring,device,hist01,shared,Data sink
+engineering_config,device,ws-eng01,primary,Engineering tools live here
+engineering_config,account,eng.mokoa,primary,Authorized engineer
