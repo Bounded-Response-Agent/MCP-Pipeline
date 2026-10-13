@@ -4,16 +4,81 @@
   "generated_at": "2026-10-12T21:45:00Z",
   "summary": "Engineering workstation ws-eng01 is very likely compromised and is using the stolen eng.mokoa token to attempt lateral movement toward ws-eng02, jump01 and the domain admin account, while sending data to an external host.",
   "findings": [
-    {"id": "FND-1", "claim": "ws-eng01 is compromised", "confidence": 0.93,
-     "evidence": ["EDR alerts at 20:55 and 20:56", "outbound beaconing from 21:00"], "affected_assets": ["ws-eng01"]},
-    {"id": "FND-2", "claim": "198.51.100.77 is command-and-control and a data exfiltration target", "confidence": 0.9,
-     "evidence": ["5 minute beacon interval", "310 MB outbound at 21:12"], "affected_assets": ["ws-eng01"], "related_flows": ["F004"]},
-    {"id": "FND-3", "claim": "The eng.mokoa credential is stolen and in use", "confidence": 0.82,
-     "evidence": ["LSASS access at 20:56", "Kerberos request from an unusual process", "RDP to jump01 at 21:20"], "affected_accounts": ["eng.mokoa"]},
-    {"id": "FND-4", "claim": "Lateral movement is in progress toward IT hosts and privileged credentials", "confidence": 0.78,
-     "evidence": ["Blocked SMB to ws-eng02", "RDP to jump01", "failed adm.kealoha logins from jump01"], "related_flows": ["F005", "F006"]},
-    {"id": "FND-5", "claim": "No evidence yet that the cooling PLC or HMI has been touched", "confidence": 0.7,
-     "evidence": ["Polls to plc-cool01 look normal", "Cooling telemetry within limits"], "affected_assets": ["plc-cool01", "hmi-cool01"]}
+    {
+      "id": "FND-1",
+      "kind": "threat",
+      "claim": "ws-eng01 is compromised",
+      "confidence": 0.93,
+      "evidence": [
+        "EDR alerts at 20:55 and 20:56",
+        "outbound beaconing from 21:00"
+      ],
+      "affected_assets": [
+        "ws-eng01"
+      ]
+    },
+    {
+      "id": "FND-2",
+      "kind": "threat",
+      "claim": "198.51.100.77 is command-and-control and a data exfiltration target",
+      "confidence": 0.9,
+      "evidence": [
+        "5 minute beacon interval",
+        "310 MB outbound at 21:12"
+      ],
+      "affected_assets": [
+        "ws-eng01"
+      ],
+      "related_flows": [
+        "F004"
+      ]
+    },
+    {
+      "id": "FND-3",
+      "kind": "threat",
+      "claim": "The eng.mokoa credential is stolen and in use",
+      "confidence": 0.82,
+      "evidence": [
+        "LSASS access at 20:56",
+        "Kerberos request from an unusual process",
+        "RDP to jump01 at 21:20"
+      ],
+      "affected_accounts": [
+        "eng.mokoa"
+      ]
+    },
+    {
+      "id": "FND-4",
+      "kind": "threat",
+      "claim": "Lateral movement is in progress toward IT hosts and privileged credentials",
+      "confidence": 0.78,
+      "evidence": [
+        "Blocked SMB to ws-eng02",
+        "RDP to jump01",
+        "failed adm.kealoha logins from jump01"
+      ],
+      "related_flows": [
+        "F005",
+        "F006"
+      ]
+    },
+    {
+      "id": "FND-5",
+      "kind": "assessment",
+      "claim": "No evidence yet that the cooling PLC or HMI has been touched",
+      "confidence": 0.7,
+      "evidence": [
+        "Polls to plc-cool01 look normal",
+        "Cooling telemetry within limits"
+      ],
+      "affected_assets": [
+        "plc-cool01",
+        "hmi-cool01"
+      ]
+    }
   ],
-  "open_questions": ["Is svc-cool-poll also exposed on ws-eng01?", "Has jump01 been accessed beyond the RDP session?"]
+  "open_questions": [
+    "Is svc-cool-poll also exposed on ws-eng01?",
+    "Has jump01 been accessed beyond the RDP session?"
+  ]
 }

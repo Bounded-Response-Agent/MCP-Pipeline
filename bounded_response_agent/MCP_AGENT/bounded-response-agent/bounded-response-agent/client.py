@@ -8,7 +8,7 @@ answer. Requires LLM_API_KEY in the environment.
 
 Usage:
     export LLM_API_KEY=...
-    python client.py "Which source IP has been hitting db01 with denied connections, and can you quarantine it?"
+    python client.py "The SOC says ws-eng01 may be compromised. What should we do?"
 """
 import asyncio
 import json
@@ -28,7 +28,17 @@ MODEL_CANDIDATES = [
     "muse-glimmer",
 ]
 SERVER_CMD = sys.executable
-SERVER_ARGS = [str(Path(__file__).with_name("server.py"))]
+# BRA_SERVER picks the server script. Default is the main server; set it to
+# legacy/server.py to run the original quarantine demo.
+SERVER_SCRIPT = os.environ.get("BRA_SERVER", "server.py")
+SERVER_ARGS = [str(Path(__file__).parent / SERVER_SCRIPT)]
+SYSTEM_PROMPT = (
+    "You are a cyber-response agent for a shipboard enterprise and OT environment. "
+    "Use the tools to investigate, check policy, and simulate responses. Recommend the "
+    "least disruptive effective action, and name the approval each step needs. You can "
+    "only analyze and recommend right now; do not claim any action was executed. "
+    "Report tool errors honestly."
+)
 
 
 async def create_completion(messages, tools, model):
@@ -117,6 +127,8 @@ async def run_agent(goal: str) -> None:
             print(f"[client] discovered tools: {[t.name for t in discovered.tools]}\n")
 
             messages = [{"role": "user", "content": goal}]
+            if SERVER_SCRIPT == "server.py":
+                messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
 
             for _ in range(8):  # safety cap on agent loop length
                 response = await create_completion_with_retry(messages, tools)
