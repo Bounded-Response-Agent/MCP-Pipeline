@@ -1,0 +1,7 @@
+account,type,owner,privilege,bound_hosts,used_by_function,revocable_by_agent,notes
+eng.mokoa,user,M. Mokoa,standard-engineering,ws-eng01;ws-eng02;jump01,engineering_config,true,Interactive engineer; token seen in lateral attempts
+eng.palakiko,user,K. Palakiko,standard-engineering,ws-eng02,,true,Normal activity
+ops.nakamura,user,R. Nakamura,standard-operations,ws-ops01,,true,Normal activity
+svc-cool-poll,service,,ot-read,ws-eng01,cooling_monitoring,true,Polls PLC and historian; revoking breaks primary monitoring
+svc-backup-mon,service,,ot-read,backup-mon01,cooling_monitoring,true,Standby monitoring identity
+adm.kealoha,user,L. Kealoha,domain-admin,dc01;jump01,,false,Privileged; escalate only

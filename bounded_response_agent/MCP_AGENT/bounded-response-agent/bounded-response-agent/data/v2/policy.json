@@ -1,0 +1,90 @@
+{
+  "policy_version": "1.0",
+  "principles": [
+    "Choose the least disruptive action that is effective against the finding.",
+    "Never take an action whose predicted effect breaches a safety-critical function's maximum tolerable gap.",
+    "Every state-changing action needs a policy pass, passing preconditions, and approval at the required level.",
+    "Every state-changing action is verified afterward and rolled back if verification fails."
+  ],
+  "roles": {
+    "soc_operator": {"level": 1},
+    "ot_supervisor": {"level": 2},
+    "ship_cio": {"level": 3}
+  },
+  "global_rules": {
+    "min_finding_confidence_to_act": 0.75,
+    "protected_assets_agent_may_act_on": [],
+    "protected_accounts_agent_may_act_on": [],
+    "approval_expiry_seconds": 900,
+    "approval_bound_to": ["action", "target", "case_id"],
+    "safety_critical_impact_requires": "ot_supervisor",
+    "max_actions_per_case_without_review": 5
+  },
+  "actions": {
+    "continue_monitoring": {
+      "disruption_rank": 0,
+      "state_changing": false,
+      "approval_required": null,
+      "rollback": null
+    },
+    "block_network_flow": {
+      "disruption_rank": 1,
+      "state_changing": true,
+      "target_type": "flow",
+      "approval_required": "soc_operator",
+      "forbidden_when": ["flow.mission_critical == true"],
+      "preconditions": ["flow exists and status is active", "no active function depends on the flow without a ready backup"],
+      "verification": "flow status becomes blocked and no new allowed events for the flow",
+      "rollback": "restore_flow",
+      "max_duration_minutes": 240
+    },
+    "restrict_network_flow": {
+      "disruption_rank": 2,
+      "state_changing": true,
+      "target_type": "flow",
+      "approval_required": "soc_operator",
+      "forbidden_when": ["flow.mission_critical == true"],
+      "preconditions": ["flow exists and status is active"],
+      "verification": "flow status becomes restricted and rate or scope limit is in effect",
+      "rollback": "restore_flow",
+      "max_duration_minutes": 240
+    },
+    "disable_account": {
+      "disruption_rank": 3,
+      "state_changing": true,
+      "target_type": "account",
+      "approval_required": "soc_operator",
+      "forbidden_when": ["account.revocable_by_agent == false", "account.type == service and account is the primary identity of a safety-critical function without a ready backup"],
+      "preconditions": ["account exists and is enabled", "account is not privileged"],
+      "verification": "account shows disabled and new logins are denied",
+      "rollback": "enable_account",
+      "max_duration_minutes": 480
+    },
+    "failover_to_backup": {
+      "disruption_rank": 4,
+      "state_changing": true,
+      "target_type": "function",
+      "approval_required": "ot_supervisor",
+      "preconditions": ["function has a backup asset", "backup_ready is true", "backup health is ok", "backup sync lag within normal range", "standby poll test passes"],
+      "verification": "function telemetry age stays within normal range after the switch",
+      "rollback": "failback_to_primary",
+      "max_duration_minutes": 720
+    },
+    "isolate_endpoint": {
+      "disruption_rank": 5,
+      "state_changing": true,
+      "target_type": "device",
+      "approval_required": "soc_operator",
+      "approval_required_if_safety_dependency": "ot_supervisor",
+      "forbidden_when": ["device.protected == true"],
+      "preconditions": [
+        "device exists and is not protected",
+        "every safety-critical function that depends on the device has completed failover and verified healthy",
+        "predicted telemetry gap is below the function's max_tolerable_gap_s"
+      ],
+      "verification": "device is unreachable except for the management path and dependent functions remain healthy",
+      "rollback": "release_endpoint",
+      "max_duration_minutes": 240
+    }
+  }
+}

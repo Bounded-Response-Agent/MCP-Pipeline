@@ -10,8 +10,8 @@ acting. This models the access-control idea that read authority and act authorit
 different boundaries, even for the same agent.
 
 Data: `data/devices.csv` (a small inventory with an `in_scope` flag per device) and
-`data/events.csv` (a firewall log). `data/actions_log.csv` starts empty and records any
-quarantine actions taken during a session.
+`data/events.csv` (a firewall log). `data/actions_log.csv` ships with only its header
+and records quarantine actions taken during a session.
 
 A task that needs multiple tools: "investigate this IP's denied traffic, find out which
 host it is, and quarantine it if you're allowed to" — one tool's output (the denied
@@ -30,25 +30,58 @@ calling model — in SDK 2.x a plain `ValueError` is otherwise masked as a gener
 "Error executing tool".
 
 ## Setup
+Requires Python 3.10 or newer. From this project folder, create a virtual environment
+and install the pinned MCP dependency.
+
+**Windows (PowerShell):**
 ```
-python3 -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt        # mcp==2.2.0, Python 3.10+
-python verify_tools.py                 # protocol-level check of all 4 tools, no LLM needed
-```
-Before each fresh demo run, reset the action log so quarantine behaves the same way twice:
-```
-echo "hostname,quarantined_at,reason" > data/actions_log.csv
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe verify_tools.py
 ```
 
-**Option A — your own client (`client.py`, included).** This is the MCP client/host for
+**macOS / Linux:**
+```
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python verify_tools.py
+```
+
+To restore the clean demo state before repeating a run, use `reset_demo.py`. This
+explicitly resets the simulated action log; it does not run automatically. The
+`verify_tools.py` protocol check calls `quarantine_host`, so run the reset command
+after that check and before starting a fresh demo.
+
+```
+# Windows (PowerShell)
+.\.venv\Scripts\python.exe reset_demo.py
+
+# macOS / Linux
+.venv/bin/python reset_demo.py
+```
+
+**No external MCP host is required.** The included `client.py` is the project's own
+MCP host: it starts `server.py`, discovers the tools, sends the user's request to the
+configured LLM gateway, runs the requested tool calls, and returns their results to the
+model. VS Code and Claude Desktop are optional ways to connect to the same server; they
+are not required to run the project.
+
+**Primary run — included client (`client.py`).** This is the MCP client/host for
 this assignment: it starts `server.py` over stdio, discovers tools via MCP, converts
 their schemas for the OpenAI-compatible chat API, sends your goal to the model, executes
 whatever tool calls it requests, feeds the results back, and loops until it gives a final
 answer. Uses only the Python standard library for the gateway request and requires an
 API key from the course gateway:
+Set the course gateway key in your shell. The project does not include an API key.
+
 ```
-export LLM_API_KEY=...
-python client.py "Which source IP has been hitting db01 with denied connections, and can you quarantine it?"
+# Windows (PowerShell)
+$env:LLM_API_KEY = "your-course-gateway-key"
+.\.venv\Scripts\python.exe client.py "Which source IP has been hitting db01 with denied connections, and can you quarantine it?"
+
+# macOS / Linux
+export LLM_API_KEY="your-course-gateway-key"
+.venv/bin/python client.py "Which source IP has been hitting db01 with denied connections, and can you quarantine it?"
 ```
 
 The client uses `https://128.171.10.80:9443/v1` by default and starts with the free
@@ -57,34 +90,36 @@ choose another model from the gateway's `/v1/models` list. It prints every tool 
 its arguments, the raw result, and the model's final answer — that output *is* the
 demonstration trace, paste it straight into the sections below.
 
-**Option B — an existing host (e.g. Claude Desktop).** Copy
+**Optional alternative — an existing host (e.g. Claude Desktop).** Copy
 `claude_desktop_config.example.json` into the host's MCP config, replace the placeholder
 paths with absolute paths on your machine, restart the host, and run the same three
 prompts there instead.
 
-**Option C — VS Code with GitHub Copilot.** This project includes
-`.vscode/mcp.json`, configured for the current Windows interpreter and the absolute
-`server.py` path. Open this folder as the VS Code workspace, trust the MCP server if
-prompted, and use Copilot Chat in **Agent** mode. Run **MCP: List Servers** from the
-Command Palette; `bounded-response-agent` should be running with all four tools listed.
-The config uses `C:\Python314\python.exe`, which has `mcp==2.2.0` installed on the
-development machine. If Python is installed elsewhere, update the `command` value in
-`.vscode/mcp.json` to the absolute path of an interpreter with `requirements.txt`
-installed.
+**Optional alternative — VS Code with GitHub Copilot.** This project includes
+`.vscode/mcp.json`, configured to use the project-local Windows virtual environment.
+Open this folder as the VS Code workspace, trust the MCP server if prompted, and use
+Copilot Chat in **Agent** mode. Run **MCP: List Servers** from the Command Palette;
+`bounded-response-agent` should be running with all four tools listed. On macOS or
+Linux, change the config's `command` to `${workspaceFolder}/.venv/bin/python` after
+creating the virtual environment.
 
 ## Demonstration traces (fresh conversation each, same config)
-Reset the action log before run A, then run each prompt in a fresh Gemini conversation:
+Reset the action log before run A, then run each prompt in a fresh conversation:
 
 ```
-Set-Content data/actions_log.csv "hostname,quarantined_at,reason"
-python client.py "<prompt>"
+# Windows (PowerShell)
+.\.venv\Scripts\python.exe reset_demo.py
+.\.venv\Scripts\python.exe client.py "<prompt>"
+
+# macOS / Linux
+.venv/bin/python reset_demo.py
+.venv/bin/python client.py "<prompt>"
 ```
 
-The client prints the actual MCP tool name, JSON arguments, returned result, and model
-text. The protocol evidence below was captured with `python verify_tools.py`; it proves
-the same server-side calls and errors independently of an LLM. No `LLM_API_KEY` was
-included in this submission, so capture the model-generated final-answer lines by
-running the host and paste them after each trace.
+The client prints the MCP tool name, JSON arguments, returned result, and model text.
+The protocol evidence below was captured with `verify_tools.py` and shows the
+server-side calls and errors independently of an LLM. The final-answer text is
+illustrative; capture actual model output by running the client with your gateway key.
 
 **A. Successful task, dependent tool calls.**
 Prompt: "Which source IP has been hitting db01 with denied connections, and can you
@@ -102,7 +137,7 @@ lookup_device({"hostname":"ws-bob"}) -> {"ip":"10.0.30.22","in_scope":"true",...
 quarantine_host({"hostname":"ws-bob","reason":"repeated deny hits to db01"}) -> status=quarantined
 ```
 
-Model final answer:
+Illustrative final answer (not a captured model run):
 
 ```text
 Source IP: 10.0.30.22
@@ -126,7 +161,7 @@ get_events_for_ip({"ip":"10.0.0.2"}) -> []
 quarantine_host({"hostname":"core-sw1","reason":"test out-of-scope refusal"}) -> ERROR: outside authorized response scope; escalate to a senior analyst
 ```
 
-Model final answer:
+Illustrative final answer (not a captured model run):
 
 ```text
 core-sw1 has no denied firewall events. It is a core switch and outside the agent's quarantine scope, so it was not quarantined; escalate to a senior analyst if containment is required.
@@ -144,7 +179,7 @@ Verified MCP call evidence:
 lookup_device({"hostname":"printer07"}) -> ERROR: No device named 'printer07'
 ```
 
-Model final answer:
+Illustrative final answer (not a captured model run):
 
 ```text
 Unable to quarantine printer07: it is not present in the authorized device inventory, so no action was taken.

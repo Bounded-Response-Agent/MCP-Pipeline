@@ -1,0 +1,10 @@
+flow_id,src_host,dst_host,dst_ip,dst_port,protocol,purpose,status,mission_critical,function_id
+F001,ws-eng01,plc-cool01,10.30.10.10,502,modbus-tcp,Cooling telemetry polling,active,true,cooling_monitoring
+F002,ws-eng01,hist01,10.30.20.5,4840,opc-ua,Historian read and write,active,true,cooling_monitoring
+F003,ws-eng01,dc01,10.20.1.10,88,kerberos,Domain authentication,active,false,
+F004,ws-eng01,,198.51.100.77,443,https,Suspected command-and-control and exfiltration,active,false,
+F005,ws-eng01,ws-eng02,10.20.30.12,445,smb,Suspected lateral movement,active,false,
+F006,ws-eng01,jump01,10.20.40.5,3389,rdp,Suspected lateral movement,active,false,
+F007,ws-eng02,hist01,10.30.20.5,4840,opc-ua,Engineering historian access,active,false,
+F008,backup-mon01,plc-cool01,10.30.10.10,502,modbus-tcp,Standby cooling telemetry polling,standby,true,cooling_monitoring
+F009,ws-ops01,hist01,10.30.20.5,4840,opc-ua,Operations dashboards,active,false,
