@@ -212,4 +212,8 @@ if __name__ == "__main__":
     if len(sys.argv) < 2:
         print('Usage: python client.py "<goal for the agent>"')
         sys.exit(1)
-    asyncio.run(run_agent(sys.argv[1]))
+    try:
+        asyncio.run(run_agent(sys.argv[1]))
+    except KeyboardInterrupt:
+        print("\n[client] interrupted.")
+        sys.exit(130)
