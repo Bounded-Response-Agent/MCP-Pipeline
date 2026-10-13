@@ -84,7 +84,7 @@ export LLM_API_KEY="your-course-gateway-key"
 .venv/bin/python client.py "Which source IP has been hitting db01 with denied connections, and can you quarantine it?"
 ```
 
-The client uses `https://128.171.10.80:9443/v1` by default and starts with the free
+The client uses `https://128.171.10.83:9443/v1` by default and starts with the free
 `gpt-oss-120b` model. Set `LLM_BASE_URL` to override the endpoint or `LLM_MODEL` to
 choose another model from the gateway's `/v1/models` list. It prints every tool call,
 its arguments, the raw result, and the model's final answer — that output *is* the

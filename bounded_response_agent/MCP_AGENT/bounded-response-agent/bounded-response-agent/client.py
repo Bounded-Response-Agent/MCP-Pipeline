@@ -21,7 +21,7 @@ from pathlib import Path
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-BASE_URL = os.environ.get("LLM_BASE_URL", "https://128.171.10.80:9443/v1")
+BASE_URL = os.environ.get("LLM_BASE_URL", "https://128.171.10.83:9443/v1")
 MODEL_CANDIDATES = [
     os.environ.get("LLM_MODEL", "gpt-oss-120b"),
     "llama-4-scout",
