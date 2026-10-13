@@ -6,9 +6,10 @@ This is the original demo, kept as it was. It uses the first, simpler data set
 cooling-monitoring scenario in `data/v2/`; see the top-level README.
 
 ## Running the legacy demo
+
 From the project folder, point the client at the legacy server:
 
-```
+```shell
 # Windows (PowerShell)
 .\.venv\Scripts\python.exe reset_demo.py
 $env:BRA_SERVER = "legacy/server.py"
@@ -20,6 +21,7 @@ $env:LLM_API_KEY = "your-course-gateway-key"
 export BRA_SERVER=legacy/server.py LLM_API_KEY="your-course-gateway-key"
 .venv/bin/python client.py "Which source IP has been hitting db01 with denied connections, and can you quarantine it?"
 ```
+
 Clear the variable afterwards with `Remove-Item Env:BRA_SERVER` (PowerShell) or
 `unset BRA_SERVER`, or the client keeps using the legacy server.
 
@@ -27,6 +29,7 @@ Protocol check with no LLM: `.\.venv\Scripts\python.exe legacy/verify_tools.py`,
 `reset_demo.py` again, because that check quarantines `ws-bob`.
 
 ## Project description (original)
+
 A small SOC (security operations center) assistant for a junior analyst. It can freely
 investigate the network — look up devices and read firewall logs — but it is *bounded*
 when it comes to taking action: it will only quarantine a host if that host is inside its
@@ -44,8 +47,9 @@ host it is, and quarantine it if you're allowed to" — one tool's output (the d
 source IP, or the resolved hostname) feeds the next tool's input.
 
 ## Tools
+
 | Tool | Purpose | Bounded? | Validation |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `lookup_device(hostname)` | Hostname -> IP, role, VLAN, in_scope | No (read) | Unknown host -> error |
 | `get_events_for_ip(ip, action?, limit=20)` | Firewall events for an IP | No (read) | Valid IP, action in {allow, deny}, 1<=limit<=100 |
 | `summarize_denied_by_source(min_count=1)` | Denied-connection counts per source IP | No (read) | min_count >= 1 |
@@ -55,11 +59,11 @@ Errors are raised as `ToolError` (not plain `ValueError`) so the message reaches
 calling model — in SDK 2.x a plain `ValueError` is otherwise masked as a generic
 "Error executing tool".
 
-
 ## Demonstration traces (fresh conversation each, same config)
+
 Reset the action log before run A, then run each prompt in a fresh conversation:
 
-```
+```shell
 # Windows (PowerShell)
 .\.venv\Scripts\python.exe reset_demo.py
 .\.venv\Scripts\python.exe client.py "<prompt>"
@@ -139,6 +143,7 @@ Unable to quarantine printer07: it is not present in the authorized device inven
 ```
 
 ## Architecture (150-250 words)
+
 The MCP server owns the security data and the operations that may be performed on it. It
 loads the device inventory and firewall events, validates typed tool arguments, exposes
 the investigation tools, and enforces the response boundary inside `quarantine_host`.
@@ -166,8 +171,8 @@ model nicely — the model can request `quarantine_host` on anything, but only t
 decides whether it happens.
 
 ## Limitation observed
+
 The model may call `quarantine_host` directly when a hostname is already present in the
 prompt instead of first calling `lookup_device`. This is acceptable because the server
 performs the authoritative existence and scope checks, but it can make the investigation
 trace less informative than a cautious analyst workflow.
-

@@ -4,6 +4,7 @@ Everything here is pure Python with no MCP imports, so it can be unit tested wit
 MCP package. server.py exposes these methods as MCP tools. Nothing in this module changes
 state: simulations are dry runs over the scenario files in data/v2.
 """
+
 from __future__ import annotations
 
 import csv
@@ -52,17 +53,13 @@ class Scenario:
     def lookup_device(self, hostname: str) -> dict[str, str]:
         key = (hostname or "").strip()
         if key not in self.devices:
-            raise ResponseError(
-                f"No device named '{hostname}'. Known devices: {', '.join(sorted(self.devices))}."
-            )
+            raise ResponseError(f"No device named '{hostname}'. Known devices: {', '.join(sorted(self.devices))}.")
         return dict(self.devices[key])
 
     def lookup_account(self, account: str) -> dict[str, str]:
         key = (account or "").strip()
         if key not in self.accounts:
-            raise ResponseError(
-                f"No account named '{account}'. Known accounts: {', '.join(sorted(self.accounts))}."
-            )
+            raise ResponseError(f"No account named '{account}'. Known accounts: {', '.join(sorted(self.accounts))}.")
         return dict(self.accounts[key])
 
     def get_network_flows(self, host: str | None = None) -> list[dict[str, str]]:
@@ -128,9 +125,7 @@ class Scenario:
 
     def get_mission_dependencies(self, function_id: str | None = None) -> list[dict[str, Any]]:
         if function_id is not None and function_id.strip() not in self.functions:
-            raise ResponseError(
-                f"No function '{function_id}'. Known functions: {', '.join(self.functions)}."
-            )
+            raise ResponseError(f"No function '{function_id}'. Known functions: {', '.join(self.functions)}.")
         ids = [function_id.strip()] if function_id else list(self.functions)
         return [
             {
@@ -157,9 +152,7 @@ class Scenario:
     # ------------------------------------------------------------------ helpers
     def _check_case(self, case_id: str | None) -> None:
         if case_id and case_id.strip() != self.findings["case_id"]:
-            raise ResponseError(
-                f"Unknown case '{case_id}'. The open case is {self.findings['case_id']}."
-            )
+            raise ResponseError(f"Unknown case '{case_id}'. The open case is {self.findings['case_id']}.")
 
     def _rules(self, action: str) -> dict[str, Any]:
         actions = self.policy["actions"]
@@ -257,7 +250,9 @@ class Scenario:
                 out["mitigation"] = f"failover_to_backup:{fid}"
         elif backup_lost and not failed_over:
             out.update(status="failover_capability_lost", severity="low")
-            out["detail"] = "Primary keeps working but the standby path is lost, so failover would no longer be possible."
+            out["detail"] = (
+                "Primary keeps working but the standby path is lost, so failover would no longer be possible."
+            )
         elif failed_over:
             out.update(status="running_on_backup")
             out["detail"] = "Backup carries the function; primary losses do not interrupt it."
@@ -269,7 +264,10 @@ class Scenario:
             if not _true(fn["safety_critical"]):
                 continue
             if any(
-                d["function_id"] == fid and d["role"] == "primary" and d["requires_type"] == "device" and d["requires_id"] == device
+                d["function_id"] == fid
+                and d["role"] == "primary"
+                and d["requires_type"] == "device"
+                and d["requires_id"] == device
                 for d in self.dependencies
             ):
                 out.append(fid)
@@ -281,7 +279,9 @@ class Scenario:
         if not rows:
             return False, f"No health telemetry for {backup or 'a backup'}."
         bad = [f"{r['metric']}={r['value']}" for r in rows if r["status"] != "ok"]
-        return (not bad), (f"{backup} metrics all ok ({len(rows)} checked)." if not bad else f"{backup} unhealthy: {', '.join(bad)}.")
+        return (not bad), (
+            f"{backup} metrics all ok ({len(rows)} checked)." if not bad else f"{backup} unhealthy: {', '.join(bad)}."
+        )
 
     def _role_level(self, role: str | None) -> int:
         return self.policy["roles"][role]["level"] if role else 0
@@ -378,9 +378,19 @@ class Scenario:
             f = self.flows[tgt]
             already = any(a in FLOW_ACTIONS and t == tgt for a, t in done)
             if _true(f["mission_critical"]):
-                forbidden.append(f"Flow {tgt} is mission critical ({f['purpose']}); policy forbids blocking or restricting it.")
-            pre.append(_check("flow_is_active", f["status"] == "active" and not already, f"status is '{'changed earlier' if already else f['status']}'."))
-            pre.append(_check("no_function_pushed_past_its_limit", impact["severity"] != "unacceptable", impact["summary"]))
+                forbidden.append(
+                    f"Flow {tgt} is mission critical ({f['purpose']}); policy forbids blocking or restricting it."
+                )
+            pre.append(
+                _check(
+                    "flow_is_active",
+                    f["status"] == "active" and not already,
+                    f"status is '{'changed earlier' if already else f['status']}'.",
+                )
+            )
+            pre.append(
+                _check("no_function_pushed_past_its_limit", impact["severity"] != "unacceptable", impact["summary"])
+            )
             dest = f["dst_host"] or f["dst_ip"]
             verb = "blocked" if action == "block_network_flow" else "restricted"
             changes.append(f"Flow {tgt} ({f['src_host']} -> {dest}:{f['dst_port']} {f['protocol']}) active -> {verb}.")
@@ -407,19 +417,43 @@ class Scenario:
             dependents = self._safety_functions_depending_on_device(tgt)
             for fid in dependents:
                 ok = ("failover_to_backup", fid) in done
-                pre.append(_check(f"failover_completed:{fid}", ok, "failover assumed complete." if ok else f"{fid} still runs on {tgt}; fail over first."))
+                pre.append(
+                    _check(
+                        f"failover_completed:{fid}",
+                        ok,
+                        "failover assumed complete." if ok else f"{fid} still runs on {tgt}; fail over first.",
+                    )
+                )
             pre.append(_check("predicted_gap_within_limit", impact["severity"] != "unacceptable", impact["summary"]))
             if dependents and rules.get("approval_required_if_safety_dependency"):
                 role = rules["approval_required_if_safety_dependency"]
-            changes.append(f"Device {tgt} network-isolated. Flows lost: {', '.join(i for t, i in sorted(self._effects(action, tgt)) if t == 'flow') or 'none'}.")
+            changes.append(
+                f"Device {tgt} network-isolated. Flows lost: "
+                f"{', '.join(i for t, i in sorted(self._effects(action, tgt)) if t == 'flow') or 'none'}."
+            )
         elif action == "failover_to_backup":
             fn = self.functions[tgt]
-            health_ok, health_detail = self._backup_health(tgt) if fn["backup_asset"] else (False, "No backup asset defined.")
-            pre.append(_check("function_has_backup", bool(fn["backup_asset"]), f"backup asset: {fn['backup_asset'] or 'none'}."))
+            health_ok, health_detail = (
+                self._backup_health(tgt) if fn["backup_asset"] else (False, "No backup asset defined.")
+            )
+            pre.append(
+                _check(
+                    "function_has_backup", bool(fn["backup_asset"]), f"backup asset: {fn['backup_asset'] or 'none'}."
+                )
+            )
             pre.append(_check("backup_marked_ready", _true(fn["backup_ready"]), f"backup_ready={fn['backup_ready']}."))
             pre.append(_check("backup_health_ok", health_ok, health_detail))
-            pre.append(_check("not_already_failed_over", False if ("failover_to_backup", tgt) in done else True, "function is on its primary."))
-            changes.append(f"Function {tgt}: polling moves from {fn['primary_asset']} to {fn['backup_asset']}; expected switch window {fn['failover_time_s']} s.")
+            pre.append(
+                _check(
+                    "not_already_failed_over",
+                    False if ("failover_to_backup", tgt) in done else True,
+                    "function is on its primary.",
+                )
+            )
+            changes.append(
+                f"Function {tgt}: polling moves from {fn['primary_asset']} to {fn['backup_asset']}; "
+                f"expected switch window {fn['failover_time_s']} s."
+            )
         else:
             changes.append("No change. Keep watching the affected assets.")
 
@@ -524,7 +558,11 @@ class Scenario:
         covered = {fid for o in options if o["verdict"] == "allowed" for fid in o["addresses_findings"]}
         uncovered = [f["id"] for f in threat if f["id"] not in covered]
         blocked_cover = {
-            fid: [f"{o['action']}:{o['target']} ({o['verdict']})" for o in options if fid in o["addresses_findings"] and o["verdict"] != "allowed"]
+            fid: [
+                f"{o['action']}:{o['target']} ({o['verdict']})"
+                for o in options
+                if fid in o["addresses_findings"] and o["verdict"] != "allowed"
+            ]
             for fid in uncovered
         }
         return {

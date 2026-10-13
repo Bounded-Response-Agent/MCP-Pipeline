@@ -47,9 +47,7 @@ def lookup_device(hostname: str) -> dict[str, str]:
 
 
 @mcp.tool()
-def get_events_for_ip(
-    ip: str, action: str | None = None, limit: int = 20
-) -> list[dict[str, str]]:
+def get_events_for_ip(ip: str, action: str | None = None, limit: int = 20) -> list[dict[str, str]]:
     """Return firewall log events where the IP is the source or destination.
     Read-only; not restricted by response scope.
 
@@ -83,9 +81,7 @@ def summarize_denied_by_source(min_count: int = 1) -> list[SummaryRow]:
         if e["action"] == "deny":
             counts[e["src_ip"]] = counts.get(e["src_ip"], 0) + 1
     out: list[SummaryRow] = [
-        {"src_ip": source_ip, "denied": denied}
-        for source_ip, denied in counts.items()
-        if denied >= min_count
+        {"src_ip": source_ip, "denied": denied} for source_ip, denied in counts.items() if denied >= min_count
     ]
     return sorted(out, key=lambda row: -row["denied"])
 
