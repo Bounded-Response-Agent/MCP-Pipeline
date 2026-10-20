@@ -40,7 +40,10 @@ SYSTEM_PROMPT = (
     "approve anything yourself; only a human can. Execution tools are not available yet, so "
     "after approvals come back, say which actions are approved and ready to execute and "
     "which were denied, refused or still pending. Never claim an action was executed. "
-    "Report tool errors honestly."
+    "Report tool errors honestly. When an external indicator is involved, autonomously "
+    "corroborate it with the live DNS, TLS, URLhaus and advisory/CVE tools when relevant; "
+    "label live observations separately from scenario evidence and do not treat an "
+    "integration outage as proof that an indicator is safe."
 )
 MAX_TURNS = int(os.environ.get("BRA_MAX_TURNS", "25"))
 

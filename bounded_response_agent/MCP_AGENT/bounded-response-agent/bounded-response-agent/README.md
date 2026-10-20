@@ -57,14 +57,30 @@ Approval and audit tools:
 | `get_approval_status`, `wait_for_approval`, `list_approvals` | Read an approval's status: pending, approved, denied or expired |
 | `get_audit_log`, `verify_audit_log` | Read the audit log and check its hash chain |
 
+Live, read-only integrations:
+
+| Tool | Real integration | Purpose |
+| --- | --- | --- |
+| `resolve_indicator_dns` | System DNS resolver | Resolve a hostname to current addresses |
+| `inspect_indicator_tls` | Live TLS endpoint | Inspect certificate identity, SANs, issuer and cipher |
+| `check_urlhaus_host` | abuse.ch URLhaus API | Check an external host or IP for malware URLs |
+| `lookup_nvd_cve` | NIST NVD API | Retrieve CVE description, CVSS and references |
+| `search_security_advisories` | GitHub Advisory Database API | Find package advisories by ecosystem, severity and keyword |
+
+These integrations are intentionally read-only and have bounded input sizes and network
+timeouts. The model may call them autonomously when a finding contains an external host,
+software component or CVE. A failed integration is reported as an error, not converted
+into a safe/clean verdict.
+
 There is deliberately no tool that approves or denies. See "Approval and audit" below.
 
 Errors are raised as `ToolError` so the message reaches the model.
 
 ## Layout
 
-- `server.py`: MCP server exposing the tools.
+- `server.py`: MCP server exposing the analysis, approval and live integration tools.
 - `response_logic.py`: the analysis logic, plain Python so it is testable without MCP.
+- `integrations.py`: normalized, read-only clients for the five public integrations.
 - `approvals.py`: approval records and the audit log, also plain Python.
 - `operator_console.py`: the human's tool for approving and denying.
 - `client.py`: the MCP host and agent loop (OpenAI-compatible gateway).

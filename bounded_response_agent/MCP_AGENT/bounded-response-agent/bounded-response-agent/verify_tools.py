@@ -16,6 +16,11 @@ from mcp.client.stdio import stdio_client
 
 FAILOVER = ["failover_to_backup:cooling_monitoring"]
 CALLS = [
+    ("resolve_indicator_dns", {"hostname": "localhost"}),
+    ("inspect_indicator_tls", {"hostname": "example.com"}),
+    ("check_urlhaus_host", {"host": "198.51.100.77"}),
+    ("lookup_nvd_cve", {"cve_id": "CVE-2024-3094"}),
+    ("search_security_advisories", {"ecosystem": "pip", "severity": "high", "limit": 1}),
     ("get_investigation_findings", {}),
     ("get_events", {"host": "ws-eng01", "severity": "high"}),
     ("get_events", {"source": "radar"}),
