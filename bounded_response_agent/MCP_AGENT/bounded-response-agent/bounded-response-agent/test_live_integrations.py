@@ -5,14 +5,67 @@ these tests prove normalization and failure semantics without depending on the i
 """
 
 import urllib.error
+from collections.abc import Callable
 from unittest.mock import Mock
 
 import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
 import integrations
+import server
 from integrations import IntegrationError
 from server import _integration
+
+
+def test_corroboration_collects_evidence_from_all_five_providers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The aggregate workflow returns one bounded evidence bundle from every provider."""
+    calls: list[tuple[str, tuple[object, ...], dict[str, object]]] = []
+
+    def record(name: str, result: dict[str, object]) -> Callable[..., dict[str, object]]:
+        def integration(*args: object, **kwargs: object) -> dict[str, object]:
+            calls.append((name, args, kwargs))
+            return result
+
+        return integration
+
+    monkeypatch.setattr(integrations, "resolve_dns", record("dns", {"source": "dns"}))
+    monkeypatch.setattr(integrations, "inspect_tls_certificate", record("tls", {"source": "tls"}))
+    monkeypatch.setattr(integrations, "query_urlhaus_host", record("urlhaus", {"source": "urlhaus"}))
+    monkeypatch.setattr(integrations, "lookup_cve", record("nvd", {"source": "nvd"}))
+    monkeypatch.setattr(integrations, "search_github_advisories", record("advisories", {"source": "advisories"}))
+
+    result = integrations.corroborate_indicator(
+        "indicator.example",
+        "CVE-2024-0001",
+        "pip",
+        "example-package",
+    )
+
+    assert [name for name, _, _ in calls] == ["dns", "tls", "urlhaus", "nvd", "advisories"]
+    assert calls[-1][2] == {"keyword": "example-package"}
+    assert result["indicator"] == {"hostname": "indicator.example"}
+    assert result["network"] == {"dns": {"source": "dns"}, "tls": {"source": "tls"}}
+    assert result["reputation"] == {"urlhaus": {"source": "urlhaus"}}
+    assert result["software"] == {
+        "nvd": {"source": "nvd"},
+        "github_advisories": {"source": "advisories"},
+    }
+    assert result["source"] == "multi-source security corroboration"
+    assert result["observed_at"].endswith("Z")
+
+
+def test_corroboration_stops_and_surfaces_provider_outage(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A provider outage aborts the aggregate workflow instead of producing a clean verdict."""
+    monkeypatch.setattr(integrations, "resolve_dns", Mock(side_effect=IntegrationError("DNS unavailable")))
+    tls = Mock()
+    monkeypatch.setattr(integrations, "inspect_tls_certificate", tls)
+
+    with pytest.raises(IntegrationError) as error:
+        integrations.corroborate_indicator("indicator.example", "CVE-2024-0001", "pip", "package")
+
+    assert str(error.value) == "DNS unavailable"
+    tls.assert_not_called()
+
 
 def test_urlhaus_response_is_normalized_to_bounded_indicator_evidence(monkeypatch: pytest.MonkeyPatch) -> None:
     """The URLhaus adapter returns only the bounded evidence fields used by the agent."""
@@ -100,11 +153,27 @@ def test_upstream_http_failures_become_integration_errors(monkeypatch: pytest.Mo
 def test_mcp_integration_errors_are_translated_to_tool_errors() -> None:
     """The MCP boundary exposes integration outages as tool errors for the model."""
 
-    def unavailable() -> None:
+    def unavailable(*args: object) -> None:
         raise IntegrationError("provider unavailable")
 
     with pytest.raises(ToolError) as error:
         _integration(unavailable)
+    assert str(error.value) == "provider unavailable"
+
+
+def test_server_tool_corroborates_indicator_with_tool_error_on_outage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The server tool turns an aggregate provider outage into an MCP tool error."""
+
+    def unavailable(*args: object) -> None:
+        raise IntegrationError("provider unavailable")
+
+    monkeypatch.setattr(server, "corroborate_indicator", unavailable)
+
+    with pytest.raises(ToolError) as error:
+        server.corroborate_external_indicator("indicator.example", "CVE-2024-0001", "pip", "urllib3")
+
     assert str(error.value) == "provider unavailable"
 
 

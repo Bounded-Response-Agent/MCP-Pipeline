@@ -202,3 +202,38 @@ def search_github_advisories(
         "observed_at": _observed_at(),
         "source": "GitHub Advisory Database",
     }
+
+
+def corroborate_indicator(
+    hostname: str,
+    cve_id: str,
+    ecosystem: str,
+    package_keyword: str,
+) -> dict[str, Any]:
+    """Collect bounded evidence from all five read-only security integrations.
+
+    Args:
+        hostname: Hostname or IP to resolve, inspect and query in URLhaus.
+        cve_id: CVE identifier to retrieve from NIST NVD.
+        ecosystem: Package ecosystem to search in GitHub's Advisory Database.
+        package_keyword: Package or component keyword for the advisory search.
+
+    Returns:
+        A normalized evidence bundle with one result from each provider.
+
+    Raises:
+        IntegrationError: If any provider cannot return a usable result.
+    """
+    dns = resolve_dns(hostname)
+    tls = inspect_tls_certificate(hostname)
+    urlhaus = query_urlhaus_host(hostname)
+    nvd = lookup_cve(cve_id)
+    advisories = search_github_advisories(ecosystem, keyword=package_keyword)
+    return {
+        "indicator": {"hostname": hostname.strip()},
+        "network": {"dns": dns, "tls": tls},
+        "reputation": {"urlhaus": urlhaus},
+        "software": {"nvd": nvd, "github_advisories": advisories},
+        "observed_at": _observed_at(),
+        "source": "multi-source security corroboration",
+    }

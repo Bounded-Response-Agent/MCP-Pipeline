@@ -66,6 +66,7 @@ Live, read-only integrations:
 | `check_urlhaus_host` | abuse.ch URLhaus API | Check an external host or IP for malware URLs |
 | `lookup_nvd_cve` | NIST NVD API | Retrieve CVE description, CVSS and references |
 | `search_security_advisories` | GitHub Advisory Database API | Find package advisories by ecosystem, severity and keyword |
+| `corroborate_external_indicator` | All five integrations above | Collect DNS, TLS, URLhaus, NVD and GitHub advisory evidence in one bounded workflow |
 
 These integrations are intentionally read-only and have bounded input sizes and network
 timeouts. The model may call them autonomously when a finding contains an external host,

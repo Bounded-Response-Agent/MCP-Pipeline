@@ -21,6 +21,15 @@ CALLS = [
     ("check_urlhaus_host", {"host": "198.51.100.77"}),
     ("lookup_nvd_cve", {"cve_id": "CVE-2024-3094"}),
     ("search_security_advisories", {"ecosystem": "pip", "severity": "high", "limit": 1}),
+    (
+        "corroborate_external_indicator",
+        {
+            "hostname": "example.com",
+            "cve_id": "CVE-2024-3094",
+            "ecosystem": "pip",
+            "package_keyword": "urllib3",
+        },
+    ),
     ("get_investigation_findings", {}),
     ("get_events", {"host": "ws-eng01", "severity": "high"}),
     ("get_events", {"source": "radar"}),

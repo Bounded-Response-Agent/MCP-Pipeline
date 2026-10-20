@@ -20,6 +20,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from approvals import ApprovalService
 from integrations import (
     IntegrationError,
+    corroborate_indicator,
     inspect_tls_certificate,
     lookup_cve,
     query_urlhaus_host,
@@ -94,6 +95,22 @@ def search_security_advisories(
     prioritize remediation evidence without changing any repository or package state.
     """
     return _integration(search_github_advisories, ecosystem, severity=severity, keyword=keyword, limit=limit)
+
+
+@mcp.tool()
+def corroborate_external_indicator(
+    hostname: str,
+    cve_id: str,
+    ecosystem: str,
+    package_keyword: str,
+) -> dict[str, Any]:
+    """Corroborate one finding with all five bounded, read-only integrations.
+
+    The workflow resolves DNS, inspects TLS, checks URLhaus, looks up the CVE in NVD,
+    and searches GitHub advisories. A provider outage is returned as an MCP tool error;
+    it is never treated as clean evidence.
+    """
+    return _integration(corroborate_indicator, hostname, cve_id, ecosystem, package_keyword)
 
 
 @mcp.tool()
