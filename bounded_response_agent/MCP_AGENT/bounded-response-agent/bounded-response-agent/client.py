@@ -94,7 +94,10 @@ async def create_completion_with_retry(messages, tools):
             except RuntimeError as exc:
                 last_error = exc
                 message = str(exc).lower()
-                is_transient = any(marker in message for marker in ("http 500", "http 503", "temporarily unavailable"))
+                is_transient = any(
+                    marker in message
+                    for marker in ("http 429", "http 500", "http 503", "temporarily unavailable")
+                )
                 if not is_transient:
                     raise
                 wait_seconds = min(8, 2**attempt)
