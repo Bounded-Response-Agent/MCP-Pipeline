@@ -18,15 +18,6 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from approvals import ApprovalService
-from integrations import (
-    IntegrationError,
-    corroborate_indicator,
-    inspect_tls_certificate,
-    lookup_cve,
-    query_urlhaus_host,
-    resolve_dns,
-    search_github_advisories,
-)
 from response_logic import ResponseError, Scenario
 
 mcp = MCPServer("bounded-response-agent")
@@ -40,77 +31,6 @@ def _run(fn, *args, **kwargs):
         return fn(*args, **kwargs)
     except ResponseError as exc:
         raise ToolError(str(exc)) from exc
-
-
-def _integration(fn, *args, **kwargs):
-    """Run a live read-only integration and expose failures as MCP tool errors."""
-    try:
-        return fn(*args, **kwargs)
-    except IntegrationError as exc:
-        raise ToolError(str(exc)) from exc
-
-
-@mcp.tool()
-def resolve_indicator_dns(hostname: str) -> dict[str, Any]:
-    """Resolve a hostname with the local configured DNS resolver.
-
-    Use this to pivot from a finding or URL to current network ownership clues. It is
-    read-only and returns the observation timestamp and source.
-    """
-    return _integration(resolve_dns, hostname)
-
-
-@mcp.tool()
-def inspect_indicator_tls(hostname: str, port: int = 443) -> dict[str, Any]:
-    """Inspect a live TLS endpoint's certificate, issuer, SANs and negotiated cipher.
-
-    Use this to corroborate whether an external indicator presents an expected identity.
-    No request payload is sent beyond the TLS handshake.
-    """
-    return _integration(inspect_tls_certificate, hostname, port)
-
-
-@mcp.tool()
-def check_urlhaus_host(host: str) -> dict[str, Any]:
-    """Query the public URLhaus malware database for URLs associated with a host or IP."""
-    return _integration(query_urlhaus_host, host)
-
-
-@mcp.tool()
-def lookup_nvd_cve(cve_id: str) -> dict[str, Any]:
-    """Look up a CVE in NIST's public National Vulnerability Database."""
-    return _integration(lookup_cve, cve_id)
-
-
-@mcp.tool()
-def search_security_advisories(
-    ecosystem: str,
-    severity: str | None = None,
-    keyword: str | None = None,
-    limit: int = 5,
-) -> dict[str, Any]:
-    """Search GitHub's public Advisory Database for vulnerable packages.
-
-    This is useful when a finding names a software component or the agent needs to
-    prioritize remediation evidence without changing any repository or package state.
-    """
-    return _integration(search_github_advisories, ecosystem, severity=severity, keyword=keyword, limit=limit)
-
-
-@mcp.tool()
-def corroborate_external_indicator(
-    hostname: str,
-    cve_id: str,
-    ecosystem: str,
-    package_keyword: str,
-) -> dict[str, Any]:
-    """Corroborate one finding with all five bounded, read-only integrations.
-
-    The workflow resolves DNS, inspects TLS, checks URLhaus, looks up the CVE in NVD,
-    and searches GitHub advisories. A provider outage is returned as an MCP tool error;
-    it is never treated as clean evidence.
-    """
-    return _integration(corroborate_indicator, hostname, cve_id, ecosystem, package_keyword)
 
 
 @mcp.tool()
@@ -249,6 +169,31 @@ def simulate_response(action: str, target: str | None = None, assume_done: list[
 
 
 @mcp.tool()
+def evaluate_response_request(
+    action: str, target: str | None = None, assume_done: list[str] | None = None
+) -> dict[str, Any]:
+    """Defensive gate for a proposed response request.
+
+    Returns REJECTED when automated checks fail, HUMAN_REVIEW when the action is safe
+    enough to consider but needs the required operator, or APPROVED for a non-state-changing
+    action. This tool never executes or approves a state-changing action.
+    """
+    return _run(scenario.evaluate_response_request, action, target, assume_done)
+
+
+@mcp.tool()
+def evaluate_investigation_response(
+    case_id: str | None = None, assume_done: list[str] | None = None
+) -> dict[str, Any]:
+    """Evaluate response options directly from the current investigation findings.
+
+    The server derives affected targets and candidate actions from the investigation data;
+    the caller does not need to place targets or response examples in a prompt.
+    """
+    return _run(scenario.evaluate_investigation_response, case_id, assume_done)
+
+
+@mcp.tool()
 def list_response_options(case_id: str | None = None, assume_done: list[str] | None = None) -> dict[str, Any]:
     """Simulate every candidate response for the open case, ranked from least to most
     disruptive, and report which threat findings only a blocked option could address.
@@ -339,6 +284,28 @@ def verify_audit_log() -> dict[str, Any]:
     """Check the audit log's hash chain. Reports the first entry that was altered, removed or
     reordered. Read-only."""
     return approvals.audit.verify()
+
+
+@mcp.tool()
+def execute_approved_action(approval_id: str) -> dict[str, Any]:
+    """Execute an approved action against simulated state.
+
+    Execution is blocked unless the approval is approved, unexpired, and its plan still
+    matches current policy and evidence. The result includes post-action verification.
+    """
+    return _run(approvals.execute_approved, approval_id)
+
+
+@mcp.tool()
+def verify_system_state(execution_id: str) -> dict[str, Any]:
+    """Verify the simulated state produced by an execution."""
+    return _run(approvals.verify_execution, execution_id)
+
+
+@mcp.tool()
+def rollback_action(execution_id: str) -> dict[str, Any]:
+    """Rollback a simulated execution to its captured pre-action state."""
+    return _run(approvals.rollback_execution, execution_id)
 
 
 if __name__ == "__main__":

@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from response_logic import ResponseError, Scenario
+from external_environment import ExternalEnvironmentError, ExternalTestEnvironment
 
 DEFAULT_STATE_DIR = Path(os.environ.get("BRA_STATE_DIR") or Path(__file__).parent / "state")
 GENESIS_HASH = "0" * 64
@@ -205,6 +206,12 @@ class ApprovalService:
         view = dict(record)
         view["seconds_left"] = max(left, 0) if record["status"] in OPEN_STATUSES else 0
         view["valid_for_execution"] = record["status"] == "approved"
+        view["decision"] = {
+            "pending": "PENDING_APPROVAL",
+            "approved": "APPROVED",
+            "denied": "BLOCKED",
+            "expired": "BLOCKED",
+        }[record["status"]]
         return view
 
     def _level(self, role: str) -> int:
@@ -246,6 +253,7 @@ class ApprovalService:
             return {
                 "status": "refused",
                 "verdict": sim["verdict"],
+                "decision": "BLOCKED",
                 "reasons": sim["reasons"],
                 "next_step": "No approval was created. Pick a different action or escalate to a human.",
             }
@@ -263,6 +271,7 @@ class ApprovalService:
             return {
                 "status": "refused",
                 "verdict": "review_needed",
+                "decision": "BLOCKED",
                 "reasons": [f"This case already has {len(stored)} approval requests; a human must review before more."],
                 "next_step": "Escalate to a human reviewer.",
             }
@@ -311,6 +320,78 @@ class ApprovalService:
             raise ResponseError(f"status must be one of: {', '.join(valid)}.")
         views = [self._view(self._refresh(r)) for r in self._stored()]
         return [v for v in views if status is None or v["status"] == status]
+
+    def execute_approved(self, approval_id: str) -> dict[str, Any]:
+        """Execute one approved plan after rechecking its fingerprint and policy."""
+        record = self._load(approval_id)
+        info = {
+            "approval_id": record["approval_id"],
+            "case_id": record["case_id"],
+            "action": record["action"],
+            "target": record["target"],
+        }
+        if record["status"] != "approved":
+            self.audit.append("execution_blocked", "agent", problem=f"approval is {record['status']}", **info)
+            raise ResponseError(f"{record['approval_id']} is {record['status']}; execution is blocked.")
+        simulation = self.scenario.simulate_response(
+            record["action"], record["target"], record["assume_done"]
+        )
+        _, digest_hash = self.plan_digest(simulation)
+        if digest_hash != record["plan_hash"]:
+            self.audit.append("execution_blocked", "agent", problem="approval plan changed", **info)
+            raise ResponseError("The approved plan no longer matches current policy or evidence; execution is blocked.")
+        external = os.environ.get("BRA_EXECUTION_MODE") == "external-test"
+        if external:
+            try:
+                result = ExternalTestEnvironment().execute(
+                    approval_id, record["action"], record["target"]
+                )
+                verification = ExternalTestEnvironment().verify(result["execution_id"])
+            except ExternalEnvironmentError as exc:
+                self.audit.append("execution_blocked", "agent", problem=str(exc), **info)
+                raise ResponseError(str(exc)) from exc
+            result = {
+                **result,
+                "status": "executed" if verification.get("verified") else "verification_failed",
+                "verification": verification,
+                "external": True,
+            }
+        else:
+            result = self.scenario.execute_action(record["action"], record["target"], record["assume_done"])
+            result["external"] = False
+        record["execution_id"] = result["execution_id"]
+        record["execution_status"] = result["status"]
+        self._save(record)
+        self.audit.append(
+            "action_executed",
+            "agent",
+            execution_id=result["execution_id"],
+            verification=result["verification"],
+            **info,
+        )
+        return {**result, "approval_id": approval_id}
+
+    def verify_execution(self, execution_id: str) -> dict[str, Any]:
+        if os.environ.get("BRA_EXECUTION_MODE") == "external-test":
+            try:
+                result = ExternalTestEnvironment().verify(execution_id)
+            except ExternalEnvironmentError as exc:
+                raise ResponseError(str(exc)) from exc
+        else:
+            result = self.scenario.verify_execution(execution_id)
+        self.audit.append("action_verified", "agent", **result)
+        return result
+
+    def rollback_execution(self, execution_id: str) -> dict[str, Any]:
+        if os.environ.get("BRA_EXECUTION_MODE") == "external-test":
+            try:
+                result = ExternalTestEnvironment().rollback(execution_id)
+            except ExternalEnvironmentError as exc:
+                raise ResponseError(str(exc)) from exc
+        else:
+            result = self.scenario.rollback_action(execution_id)
+        self.audit.append("action_rolled_back", "agent", **result)
+        return result
 
     # ------------------------------------------------------------------ human side
     def decide(self, approval_id: str, decision: str, role: str, name: str, note: str | None = None) -> dict[str, Any]:

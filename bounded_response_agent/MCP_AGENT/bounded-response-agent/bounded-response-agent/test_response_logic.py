@@ -29,6 +29,7 @@ class AnalysisTests(unittest.TestCase):
         for item in self.truth["expected_recommendation"]["actions"]:
             r = self.verdict(item["action"], item["target"])
             self.assertEqual(r["verdict"], "allowed", f"{item}: {r['reasons']}")
+            self.assertEqual(r["decision"], "PENDING_APPROVAL", item)
             self.assertEqual(r["approval_required"], item["approval"], item)
             self.assertEqual(r["mission_impact"]["safety_critical_functions_affected"], [])
 
@@ -36,6 +37,7 @@ class AnalysisTests(unittest.TestCase):
     def test_isolating_ws_eng01_first_is_unacceptable(self):
         r = self.verdict("isolate_endpoint", "ws-eng01")
         self.assertEqual(r["verdict"], "unacceptable_impact")
+        self.assertEqual(r["decision"], "BLOCKED")
         cooling = next(f for f in r["mission_impact"]["functions"] if f["function_id"] == "cooling_monitoring")
         self.assertTrue(cooling["exceeds_max_gap"])
         self.assertIsNone(cooling["predicted_gap_s"])
@@ -74,6 +76,7 @@ class AnalysisTests(unittest.TestCase):
         for host in ("fw01", "core-sw1", "dc01", "plc-cool01", "hmi-cool01"):
             r = self.verdict("isolate_endpoint", host)
             self.assertEqual(r["verdict"], "forbidden", host)
+            self.assertEqual(r["decision"], "BLOCKED", host)
             self.assertIsNone(r["approval_required"])
 
     def test_privileged_account_is_forbidden(self):
@@ -150,6 +153,31 @@ class AnalysisTests(unittest.TestCase):
         self.s.list_response_options()
         after = {p.name: p.read_bytes() for p in DATA.iterdir() if p.is_file()}
         self.assertEqual(before, after)
+
+    def test_response_gate_rejects_unsafe_action_with_description(self):
+        result = self.s.evaluate_response_request("isolate_endpoint", "ws-eng01")
+        self.assertEqual(result["gate_status"], "REJECTED")
+        self.assertIn("rejected", result["explanation"])
+        self.assertIn("cooling_monitoring", result["explanation"])
+        self.assertEqual(result["next_step"], "Do not execute. Escalate or choose a safer action.")
+
+    def test_response_gate_routes_safe_change_to_human_review(self):
+        result = self.s.evaluate_response_request("block_network_flow", "F004")
+        self.assertEqual(result["gate_status"], "HUMAN_REVIEW")
+        self.assertIn("soc_operator", result["explanation"])
+        self.assertEqual(result["next_step"], "Create an operator approval request; do not execute yet.")
+
+    def test_response_gate_approves_read_only_monitoring(self):
+        result = self.s.evaluate_response_request("continue_monitoring")
+        self.assertEqual(result["gate_status"], "APPROVED")
+        self.assertEqual(result["next_step"], "Proceed with the read-only or non-state-changing result.")
+
+    def test_investigation_gate_derives_targets_without_prompt_values(self):
+        result = self.s.evaluate_investigation_response()
+        self.assertEqual(result["source"], "investigation_findings")
+        decisions = {(item["action"], item["target"]): item for item in result["decisions"]}
+        self.assertEqual(decisions[("block_network_flow", "F004")]["gate_status"], "HUMAN_REVIEW")
+        self.assertEqual(decisions[("isolate_endpoint", "ws-eng01")]["gate_status"], "REJECTED")
 
     def test_data_files_are_consistent(self):
         result = subprocess.run(

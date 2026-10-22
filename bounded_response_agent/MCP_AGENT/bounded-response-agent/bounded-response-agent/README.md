@@ -22,10 +22,44 @@ disruptive effective one.
 | 1 | Scenario data, policy model | Done (`data/v2/`) |
 | 2 | Read and analysis tools: policy, mission impact, dry-run simulation | Done |
 | 3 | Human approval and tamper-evident audit log | **Done (this version)** |
-| 4 | Execution tools, post-action verification, rollback | Planned |
-| 5 | Full demo traces and tests for the refusal and rollback paths | Planned |
+| 4 | Execution tools, post-action verification, rollback | Done (simulated state) |
+| 5 | Full demo traces and tests for the refusal and rollback paths | In progress |
 
-The agent can recommend and ask a human for approval. It cannot execute anything yet.
+The agent can recommend, obtain human approval, execute approved actions against simulated
+state, verify the result, and roll back the simulated change. It does not control real
+firewalls, identities, or endpoints.
+
+For an external demonstration, a local REST test environment is available in
+`test_environment.py`. It is disabled by default. Start it in one terminal:
+
+```shell
+.\.venv\Scripts\python.exe test_environment.py
+```
+
+Copy the printed URL and enable the explicit test-only adapter in the shell running the
+agent:
+
+```powershell
+$env:BRA_EXECUTION_MODE = "external-test"
+$env:BRA_ENVIRONMENT = "test"
+$env:BRA_EXTERNAL_BASE_URL = "http://127.0.0.1:PORT"
+```
+
+Only an approved `block_network_flow` action for test flow `F004` is accepted by this
+environment. The adapter sends the approval ID with the request, verifies the returned
+execution, and supports rollback. Do not point these variables at production services.
+
+The decision posture is defensive:
+
+- `APPROVED`: a state-changing request was approved by the required human role.
+- `PENDING_APPROVAL`: a state-changing action passed the dry run but still needs a human
+  decision.
+- `BLOCKED`: policy, evidence, preconditions, mission impact, role, expiry, or another
+  authority check prevents the action.
+
+`APPROVED` means authorized or ready for execution in this version; it does not claim that
+an external production system was changed. Execution is limited to simulated state or the
+explicitly opt-in local REST test environment.
 
 The original quarantine-only demo is kept in [`legacy/`](legacy/README.md).
 
@@ -42,6 +76,8 @@ The original quarantine-only demo is kept in [`legacy/`](legacy/README.md).
 | `get_mission_dependencies` | What each mission function needs, primary or backup, plus its gap limit |
 | `analyze_mission_impact` | Predicts which functions an action interrupts and for how long |
 | `simulate_response` | Dry run: policy, preconditions, evidence, impact, approval level and a verdict |
+| `evaluate_response_request` | Defensive gate: returns `REJECTED`, `HUMAN_REVIEW`, or `APPROVED` with an explanation and next step |
+| `evaluate_investigation_response` | Derives response candidates from the current investigation findings and applies the defensive gate to each |
 | `list_response_options` | Simulates every candidate, ranked least to most disruptive, and reports threats only a blocked option could address |
 
 `simulate_response` verdicts: `allowed`, `forbidden`, `insufficient_evidence`,
@@ -56,22 +92,9 @@ Approval and audit tools:
 | `request_operator_approval` | Ask a human to approve one action. The action is dry-run first; the request is refused unless the verdict is `allowed`. Creates a pending request only; nothing is executed |
 | `get_approval_status`, `wait_for_approval`, `list_approvals` | Read an approval's status: pending, approved, denied or expired |
 | `get_audit_log`, `verify_audit_log` | Read the audit log and check its hash chain |
-
-Live, read-only integrations:
-
-| Tool | Real integration | Purpose |
-| --- | --- | --- |
-| `resolve_indicator_dns` | System DNS resolver | Resolve a hostname to current addresses |
-| `inspect_indicator_tls` | Live TLS endpoint | Inspect certificate identity, SANs, issuer and cipher |
-| `check_urlhaus_host` | abuse.ch URLhaus API | Check an external host or IP for malware URLs |
-| `lookup_nvd_cve` | NIST NVD API | Retrieve CVE description, CVSS and references |
-| `search_security_advisories` | GitHub Advisory Database API | Find package advisories by ecosystem, severity and keyword |
-| `corroborate_external_indicator` | All five integrations above | Collect DNS, TLS, URLhaus, NVD and GitHub advisory evidence in one bounded workflow |
-
-These integrations are intentionally read-only and have bounded input sizes and network
-timeouts. The model may call them autonomously when a finding contains an external host,
-software component or CVE. A failed integration is reported as an error, not converted
-into a safe/clean verdict.
+| `execute_approved_action` | Execute a still-valid approved plan against simulated state and verify it |
+| `verify_system_state` | Re-check the simulated state for an execution |
+| `rollback_action` | Restore the captured pre-action simulated state |
 
 There is deliberately no tool that approves or denies. See "Approval and audit" below.
 
@@ -81,7 +104,6 @@ Errors are raised as `ToolError` so the message reaches the model.
 
 - `server.py`: MCP server exposing the analysis, approval and live integration tools.
 - `response_logic.py`: the analysis logic, plain Python so it is testable without MCP.
-- `integrations.py`: normalized, read-only clients for the five public integrations.
 - `approvals.py`: approval records and the audit log, also plain Python.
 - `operator_console.py`: the human's tool for approving and denying.
 - `client.py`: the MCP host and agent loop (OpenAI-compatible gateway).
@@ -126,17 +148,29 @@ python3 -m venv .venv
 Set the course gateway key in your shell. The project does not include a key. The client
 uses `https://128.171.10.83:9443/v1` by default; set `LLM_BASE_URL` to override it and
 `LLM_MODEL` to choose another model. It prints every tool call, its arguments, the raw
-result and the final answer.
+result and the final answer. To read the goal from JSON and save a structured JSON result,
+use `--input` and `--output`. The input file must contain a string `goal` property:
+
+```json
+{
+  "goal": "Investigate ws-eng01 and recommend the least disruptive response."
+}
+```
 
 ```shell
 # Windows (PowerShell)
 $env:LLM_API_KEY = "your-course-gateway-key"
 .\.venv\Scripts\python.exe client.py "The SOC says ws-eng01 may be compromised. What should we do?"
+.\.venv\Scripts\python.exe client.py --input request.json --output response.json
 
 # macOS / Linux
 export LLM_API_KEY="your-course-gateway-key"
 .venv/bin/python client.py "The SOC says ws-eng01 may be compromised. What should we do?"
+.venv/bin/python client.py --input request.json --output response.json
 ```
+
+The output JSON contains the goal, server name, discovered tools, every tool call and
+result, the final answer, and a run status (`completed` or `max_turns_exceeded`).
 
 When the agent requests approval, the client pauses and asks you to approve or deny it, so
 you play the human operator. Use `$env:BRA_MAX_TURNS` to raise the agent's turn limit (default 25).

@@ -11,12 +11,14 @@ Usage:
 """
 
 import asyncio
+import argparse
 import json
 import os
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Any
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -34,18 +36,16 @@ SERVER_SCRIPT = os.environ.get("BRA_SERVER", "server.py")
 SERVER_ARGS = [str(Path(__file__).parent / SERVER_SCRIPT)]
 SYSTEM_PROMPT = (
     "You are a cyber-response agent for a shipboard enterprise and OT environment. "
-    "Use the tools to investigate, check policy, and simulate responses. Recommend the "
-    "least disruptive effective action. For each action you recommend, call "
+    "Use the investigation findings and evaluate_investigation_response to derive and "
+    "classify response options. Recommend the least disruptive effective action. For each "
+    "action that reaches HUMAN_REVIEW, call "
     "request_operator_approval with a short rationale, then wait_for_approval. You cannot "
     "approve anything yourself; only a human can. Execution tools are not available yet, so "
-    "after approvals come back, say which actions are approved and ready to execute and "
+    "report each action with a defensive decision: APPROVED, BLOCKED, or PENDING_APPROVAL. "
+    "After approvals come back, say which actions are approved and ready to execute and "
     "which were denied, refused or still pending. Never claim an action was executed. "
-    "Report tool errors honestly. When an external indicator is involved, autonomously "
-    "corroborate it with corroborate_external_indicator when a hostname, CVE, ecosystem "
-    "and package keyword are available; otherwise use the individual live DNS, TLS, "
-    "URLhaus and advisory/CVE tools when relevant; "
-    "label live observations separately from scenario evidence and do not treat an "
-    "integration outage as proof that an indicator is safe."
+    "Report tool errors honestly and label scenario evidence separately from policy "
+    "decisions."
 )
 MAX_TURNS = int(os.environ.get("BRA_MAX_TURNS", "25"))
 
@@ -166,7 +166,7 @@ def prompt_operator(text: str) -> None:
         print(f"[operator] could not record the decision: {exc}\n")
 
 
-async def run_agent(goal: str) -> None:
+async def run_agent(goal: str) -> dict[str, Any]:
     api_key = os.environ.get("LLM_API_KEY")
     if not api_key:
         raise RuntimeError("LLM_API_KEY is not set in the environment.")
@@ -178,6 +178,15 @@ async def run_agent(goal: str) -> None:
             discovered = await session.list_tools()
             tools = mcp_tools_to_openai(discovered.tools)
             print(f"[client] discovered tools: {[t.name for t in discovered.tools]}\n")
+            output = {
+                "goal": goal,
+                "server": SERVER_SCRIPT,
+                "discovered_tools": [tool.name for tool in discovered.tools],
+                "tool_calls": [],
+                "tool_results": [],
+                "final_answer": None,
+                "status": "running",
+            }
 
             messages = [{"role": "user", "content": goal}]
             if SERVER_SCRIPT == "server.py":
@@ -188,10 +197,12 @@ async def run_agent(goal: str) -> None:
                 message = response["choices"][0]["message"]
                 if message.get("content") and message["content"].strip():
                     print(f"[model] {message['content'].strip()}\n")
+                    output["final_answer"] = message["content"].strip()
 
                 if not message.get("tool_calls"):
                     print("[client] final answer above.")
-                    return
+                    output["status"] = "completed"
+                    return output
 
                 messages.append(message)
 
@@ -199,10 +210,14 @@ async def run_agent(goal: str) -> None:
                     arguments = json.loads(call["function"]["arguments"])
                     name = call["function"]["name"]
                     print(f"[tool_call] {name}({json.dumps(arguments)})")
+                    output["tool_calls"].append({"name": name, "arguments": arguments})
                     result = await session.call_tool(name, arguments)
                     text = " ".join(c.text for c in result.content if hasattr(c, "text"))
                     status = "ERROR" if result.is_error else "ok"
                     print(f"[tool_result:{status}] {text}\n")
+                    output["tool_results"].append(
+                        {"name": name, "status": status, "text": text}
+                    )
                     if SERVER_SCRIPT == "server.py" and name == "request_operator_approval" and not result.is_error:
                         prompt_operator(text)
                     messages.append(
@@ -214,14 +229,54 @@ async def run_agent(goal: str) -> None:
                     )
 
             print("[client] stopped after max turns without a final answer.")
+            output["status"] = "max_turns_exceeded"
+            return output
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print('Usage: python client.py "<goal for the agent>"')
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Run the bounded response MCP agent.")
+    parser.add_argument("goal", nargs="?", help="Goal for the agent.")
+    parser.add_argument(
+        "--input",
+        dest="input_path",
+        help='JSON input file containing {"goal": "..."}',
+    )
+    parser.add_argument(
+        "--output",
+        dest="output_path",
+        help="Write the structured result to this JSON file.",
+    )
+    args = parser.parse_args()
+
+    if args.input_path and args.goal:
+        parser.error("provide either a goal or --input, not both")
+    if not args.input_path and not args.goal:
+        parser.error('provide a goal or --input request.json')
+
+    if args.input_path:
+        try:
+            with open(args.input_path, encoding="utf-8") as input_file:
+                request = json.load(input_file)
+        except (OSError, json.JSONDecodeError) as exc:
+            parser.error(f"could not read JSON input '{args.input_path}': {exc}")
+        if not isinstance(request, dict) or not isinstance(request.get("goal"), str):
+            parser.error("JSON input must be an object with a string 'goal' field")
+        goal = request["goal"].strip()
+        if not goal:
+            parser.error("JSON input 'goal' cannot be empty")
+    else:
+        goal = args.goal
+
     try:
-        asyncio.run(run_agent(sys.argv[1]))
+        result = asyncio.run(run_agent(goal))
+        if args.output_path:
+            try:
+                with open(args.output_path, "w", encoding="utf-8") as output_file:
+                    json.dump(result, output_file, indent=2)
+                    output_file.write("\n")
+            except OSError as exc:
+                print(f"[client] could not write JSON output: {exc}", file=sys.stderr)
+                sys.exit(1)
     except KeyboardInterrupt:
         print("\n[client] interrupted.")
         sys.exit(130)

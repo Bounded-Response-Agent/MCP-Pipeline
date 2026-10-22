@@ -48,6 +48,16 @@ class Scenario:
         self.events = _read_csv(d / "events.csv")
         self.findings = json.loads((d / "findings.json").read_text(encoding="utf-8"))
         self.policy = json.loads((d / "policy.json").read_text(encoding="utf-8"))
+        self.runtime = {
+            "flow_status": {flow_id: row["status"] for flow_id, row in self.flows.items()},
+            "account_enabled": {account: True for account in self.accounts},
+            "device_isolated": {hostname: False for hostname in self.devices},
+            "function_location": {
+                function_id: row["primary_asset"] for function_id, row in self.functions.items()
+            },
+        }
+        self.executions: dict[str, dict[str, Any]] = {}
+        self._next_execution_id = 1
 
     # ------------------------------------------------------------------ read tools
     def lookup_device(self, hostname: str) -> dict[str, str]:
@@ -286,6 +296,34 @@ class Scenario:
     def _role_level(self, role: str | None) -> int:
         return self.policy["roles"][role]["level"] if role else 0
 
+    def _runtime_done(self) -> set[tuple[str, str]]:
+        done = {
+            ("block_network_flow", flow_id)
+            for flow_id, status in self.runtime["flow_status"].items()
+            if status == "blocked"
+        }
+        done |= {
+            ("restrict_network_flow", flow_id)
+            for flow_id, status in self.runtime["flow_status"].items()
+            if status == "restricted"
+        }
+        done |= {
+            ("disable_account", account)
+            for account, enabled in self.runtime["account_enabled"].items()
+            if not enabled
+        }
+        done |= {
+            ("isolate_endpoint", hostname)
+            for hostname, isolated in self.runtime["device_isolated"].items()
+            if isolated
+        }
+        done |= {
+            ("failover_to_backup", function_id)
+            for function_id, location in self.runtime["function_location"].items()
+            if location == self.functions[function_id]["backup_asset"]
+        }
+        return done
+
     # ------------------------------------------------------------------ analysis tools
     def analyze_mission_impact(
         self, action: str, target: str | None = None, assume_done: list[str] | None = None
@@ -365,9 +403,11 @@ class Scenario:
     ) -> dict[str, Any]:
         """Dry run: policy check, preconditions, evidence and mission impact. Changes nothing."""
         rules = self._rules(action)
-        done = self._parse_assumed(assume_done)
+        done = self._parse_assumed(assume_done) | self._runtime_done()
         ttype, tgt = self._resolve_target(action, target)
-        impact = self.analyze_mission_impact(action, tgt, assume_done)
+        impact = self.analyze_mission_impact(
+            action, tgt, [f"{a}:{t}" for a, t in sorted(done)]
+        )
         g = self.policy["global_rules"]
         forbidden: list[str] = []
         pre: list[dict[str, Any]] = []
@@ -384,8 +424,8 @@ class Scenario:
             pre.append(
                 _check(
                     "flow_is_active",
-                    f["status"] == "active" and not already,
-                    f"status is '{'changed earlier' if already else f['status']}'.",
+                    self.runtime["flow_status"][tgt] == "active" and not already,
+                    f"status is '{'changed earlier' if already else self.runtime['flow_status'][tgt]}'.",
                 )
             )
             pre.append(
@@ -407,7 +447,13 @@ class Scenario:
                 if _true(fn["safety_critical"]) and not (fn["backup_asset"] and _true(fn["backup_ready"])):
                     forbidden.append(f"{tgt} is the primary identity of safety-critical {fid} and no backup is ready.")
             pre.append(_check("account_not_privileged", not privileged, f"privilege is '{a['privilege']}'."))
-            pre.append(_check("account_enabled", ("disable_account", tgt) not in done, "account is currently enabled."))
+            pre.append(
+                _check(
+                    "account_enabled",
+                    self.runtime["account_enabled"][tgt] and ("disable_account", tgt) not in done,
+                    "account is currently enabled." if self.runtime["account_enabled"][tgt] else "account is disabled.",
+                )
+            )
             changes.append(f"Account {tgt} enabled -> disabled; new logins denied.")
         elif action == "isolate_endpoint":
             d = self.devices[tgt]
@@ -492,12 +538,16 @@ class Scenario:
             verdict = "allowed"
             reasons = ["Policy, evidence, preconditions and mission impact all pass."]
 
+        decision = "BLOCKED" if verdict != "allowed" else (
+            "PENDING_APPROVAL" if rules.get("state_changing") else "APPROVED"
+        )
         return {
             "dry_run": True,
             "action": action,
             "target": tgt,
             "assumed_done": impact["assumed_done"],
             "verdict": verdict,
+            "decision": decision,
             "reasons": reasons,
             "approval_required": role if (rules.get("state_changing") and verdict == "allowed") else None,
             "approval_level_if_allowed": role if rules.get("state_changing") else None,
@@ -517,6 +567,152 @@ class Scenario:
             "rollback": rules.get("rollback"),
             "max_duration_minutes": rules.get("max_duration_minutes"),
         }
+
+    def evaluate_response_request(
+        self, action: str, target: str | None = None, assume_done: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Classify a proposed response as approved, rejected, or requiring human review."""
+        simulation = self.simulate_response(action, target, assume_done)
+        if simulation["verdict"] != "allowed":
+            gate_status = "REJECTED"
+            explanation = (
+                "The request was rejected because it failed the defensive policy gate. "
+                + " ".join(simulation["reasons"])
+            )
+        elif simulation["approval_required"] is not None:
+            gate_status = "HUMAN_REVIEW"
+            explanation = (
+                f"The request passed automated checks but requires approval from "
+                f"{simulation['approval_required']} before execution."
+            )
+        else:
+            gate_status = "APPROVED"
+            explanation = "The request is read-only or non-state-changing and passed automated checks."
+        return {
+            "gate_status": gate_status,
+            "explanation": explanation,
+            "action": simulation["action"],
+            "target": simulation["target"],
+            "reasoning": simulation["reasons"],
+            "simulation": simulation,
+            "next_step": {
+                "REJECTED": "Do not execute. Escalate or choose a safer action.",
+                "HUMAN_REVIEW": "Create an operator approval request; do not execute yet.",
+                "APPROVED": "Proceed with the read-only or non-state-changing result.",
+            }[gate_status],
+        }
+
+    def evaluate_investigation_response(
+        self, case_id: str | None = None, assume_done: list[str] | None = None
+    ) -> dict[str, Any]:
+        """Evaluate response options derived from the current investigation findings."""
+        self._check_case(case_id)
+        options = self.list_response_options(case_id, assume_done)["options"]
+        decisions = []
+        for option in options:
+            gate = self.evaluate_response_request(option["action"], option["target"], assume_done)
+            decisions.append(
+                {
+                    "action": gate["action"],
+                    "target": gate["target"],
+                    "gate_status": gate["gate_status"],
+                    "explanation": gate["explanation"],
+                    "reasoning": gate["reasoning"],
+                    "required_role": gate["simulation"]["approval_required"],
+                    "disruption_rank": gate["simulation"]["disruption_rank"],
+                    "predicted_state_changes": gate["simulation"]["predicted_state_changes"],
+                    "next_step": gate["next_step"],
+                }
+            )
+        return {
+            "case_id": self.findings["case_id"],
+            "source": "investigation_findings",
+            "finding_summary": self.findings["summary"],
+            "decisions": decisions,
+        }
+
+    def execute_action(self, action: str, target: str | None, assume_done: list[str] | None = None) -> dict[str, Any]:
+        """Apply an already-authorized action to simulated state and verify it."""
+        simulation = self.simulate_response(action, target, assume_done)
+        if simulation["verdict"] != "allowed":
+            raise ResponseError(f"Execution blocked: {simulation['verdict']}: {' '.join(simulation['reasons'])}")
+        snapshot = {
+            "flow_status": dict(self.runtime["flow_status"]),
+            "account_enabled": dict(self.runtime["account_enabled"]),
+            "device_isolated": dict(self.runtime["device_isolated"]),
+            "function_location": dict(self.runtime["function_location"]),
+        }
+        target = simulation["target"]
+        if action == "block_network_flow":
+            self.runtime["flow_status"][target] = "blocked"
+        elif action == "restrict_network_flow":
+            self.runtime["flow_status"][target] = "restricted"
+        elif action == "disable_account":
+            self.runtime["account_enabled"][target] = False
+        elif action == "isolate_endpoint":
+            self.runtime["device_isolated"][target] = True
+        elif action == "failover_to_backup":
+            self.runtime["function_location"][target] = self.functions[target]["backup_asset"]
+            for flow_id, flow in self.flows.items():
+                if flow["function_id"] == target and flow["src_host"] == self.functions[target]["backup_asset"]:
+                    self.runtime["flow_status"][flow_id] = "active"
+        execution_id = f"EXE-{self._next_execution_id:04d}"
+        self._next_execution_id += 1
+        self.executions[execution_id] = {
+            "execution_id": execution_id,
+            "action": action,
+            "target": target,
+            "snapshot": snapshot,
+            "status": "executed",
+            "verified": False,
+        }
+        verification = self.verify_execution(execution_id)
+        self.executions[execution_id]["verified"] = verification["verified"]
+        if not verification["verified"]:
+            self.rollback_action(execution_id)
+            raise ResponseError(f"Execution verification failed for {execution_id}; state was rolled back.")
+        return {
+            "execution_id": execution_id,
+            "status": "executed",
+            "decision": "APPROVED",
+            "verification": verification,
+            "predicted_state_changes": simulation["predicted_state_changes"],
+        }
+
+    def verify_execution(self, execution_id: str) -> dict[str, Any]:
+        record = self.executions.get(execution_id)
+        if record is None:
+            raise ResponseError(f"No execution named '{execution_id}'.")
+        action, target = record["action"], record["target"]
+        if action == "block_network_flow":
+            verified = self.runtime["flow_status"][target] == "blocked"
+            observed = self.runtime["flow_status"][target]
+        elif action == "restrict_network_flow":
+            verified = self.runtime["flow_status"][target] == "restricted"
+            observed = self.runtime["flow_status"][target]
+        elif action == "disable_account":
+            verified = not self.runtime["account_enabled"][target]
+            observed = "disabled" if verified else "enabled"
+        elif action == "isolate_endpoint":
+            verified = self.runtime["device_isolated"][target]
+            observed = "isolated" if verified else "reachable"
+        elif action == "failover_to_backup":
+            verified = self.runtime["function_location"][target] == self.functions[target]["backup_asset"]
+            observed = self.runtime["function_location"][target]
+        else:
+            raise ResponseError(f"'{action}' cannot be verified.")
+        return {"execution_id": execution_id, "verified": verified, "observed_state": observed}
+
+    def rollback_action(self, execution_id: str) -> dict[str, Any]:
+        record = self.executions.get(execution_id)
+        if record is None:
+            raise ResponseError(f"No execution named '{execution_id}'.")
+        if record["status"] == "rolled_back":
+            return {"execution_id": execution_id, "status": "rolled_back", "decision": "APPROVED"}
+        for key, value in record["snapshot"].items():
+            self.runtime[key] = dict(value)
+        record["status"] = "rolled_back"
+        return {"execution_id": execution_id, "status": "rolled_back", "decision": "APPROVED"}
 
     def list_response_options(self, case_id: str | None = None, assume_done: list[str] | None = None) -> dict[str, Any]:
         self._check_case(case_id)

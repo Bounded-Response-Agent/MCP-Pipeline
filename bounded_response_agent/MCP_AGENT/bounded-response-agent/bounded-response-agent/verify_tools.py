@@ -16,20 +16,6 @@ from mcp.client.stdio import stdio_client
 
 FAILOVER = ["failover_to_backup:cooling_monitoring"]
 CALLS = [
-    ("resolve_indicator_dns", {"hostname": "localhost"}),
-    ("inspect_indicator_tls", {"hostname": "example.com"}),
-    ("check_urlhaus_host", {"host": "198.51.100.77"}),
-    ("lookup_nvd_cve", {"cve_id": "CVE-2024-3094"}),
-    ("search_security_advisories", {"ecosystem": "pip", "severity": "high", "limit": 1}),
-    (
-        "corroborate_external_indicator",
-        {
-            "hostname": "example.com",
-            "cve_id": "CVE-2024-3094",
-            "ecosystem": "pip",
-            "package_keyword": "urllib3",
-        },
-    ),
     ("get_investigation_findings", {}),
     ("get_events", {"host": "ws-eng01", "severity": "high"}),
     ("get_events", {"source": "radar"}),
@@ -41,6 +27,9 @@ CALLS = [
     ("get_mission_dependencies", {"function_id": "cooling_monitoring"}),
     ("analyze_mission_impact", {"action": "isolate_endpoint", "target": "ws-eng01"}),
     ("simulate_response", {"action": "block_network_flow", "target": "F004"}),
+    ("evaluate_response_request", {"action": "block_network_flow", "target": "F004"}),
+    ("evaluate_response_request", {"action": "isolate_endpoint", "target": "ws-eng01"}),
+    ("evaluate_investigation_response", {}),
     ("simulate_response", {"action": "isolate_endpoint", "target": "ws-eng01"}),
     ("simulate_response", {"action": "isolate_endpoint", "target": "ws-eng01", "assume_done": FAILOVER}),
     ("simulate_response", {"action": "isolate_endpoint", "target": "fw01"}),

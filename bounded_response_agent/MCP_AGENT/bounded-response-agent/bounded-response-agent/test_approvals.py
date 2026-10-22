@@ -2,13 +2,17 @@
 
 import ast
 import json
+import os
 import tempfile
+import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from approvals import ApprovalService
 from response_logic import ResponseError, Scenario
+from test_environment import TestEnvironmentState, create_server
 
 FAILOVER = ["failover_to_backup:cooling_monitoring"]
 SERVER = Path(__file__).parent / "server.py"
@@ -33,6 +37,17 @@ class ApprovalTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
+        self.environment = patch.dict(
+            os.environ,
+            {
+                "BRA_EXECUTION_MODE": "",
+                "BRA_ENVIRONMENT": "",
+                "BRA_EXTERNAL_BASE_URL": "",
+                "BRA_EXTERNAL_TOKEN": "",
+            },
+        )
+        self.environment.start()
+        self.addCleanup(self.environment.stop)
         self.clock = Clock()
         self.svc = ApprovalService(self.scenario, self.tmp.name, self.clock)
 
@@ -111,6 +126,58 @@ class ApprovalTests(unittest.TestCase):
         denied = self.svc.decide(b["approval_id"], "deny", "soc_operator", "R. Nakamura", "Not yet")
         self.assertEqual(denied["status"], "denied")
         self.assertFalse(denied["valid_for_execution"])
+
+    def test_approved_action_executes_verifies_and_rolls_back(self):
+        request = self.request_block()
+        self.svc.decide(request["approval_id"], "approve", "soc_operator", "R. Nakamura")
+
+        executed = self.svc.execute_approved(request["approval_id"])
+
+        self.assertEqual(executed["status"], "executed")
+        self.assertTrue(executed["verification"]["verified"])
+        self.assertEqual(self.scenario.runtime["flow_status"]["F004"], "blocked")
+        verified = self.svc.verify_execution(executed["execution_id"])
+        self.assertTrue(verified["verified"])
+
+        rolled_back = self.svc.rollback_execution(executed["execution_id"])
+        self.assertEqual(rolled_back["status"], "rolled_back")
+        self.assertEqual(self.scenario.runtime["flow_status"]["F004"], "active")
+
+    def test_unapproved_action_is_blocked_before_execution(self):
+        request = self.request_block()
+
+        with self.assertRaises(ResponseError):
+            self.svc.execute_approved(request["approval_id"])
+
+        self.assertEqual(self.scenario.runtime["flow_status"]["F004"], "active")
+        self.assertEqual(self.svc.audit.read(event="execution_blocked")[0]["approval_id"], request["approval_id"])
+
+    def test_approved_action_can_execute_verify_and_rollback_in_external_test_environment(self):
+        state = TestEnvironmentState()
+        http_server = create_server(state)
+        thread = threading.Thread(target=http_server.serve_forever)
+        thread.start()
+        self.addCleanup(http_server.server_close)
+        self.addCleanup(thread.join)
+        self.addCleanup(http_server.shutdown)
+        host, port = http_server.server_address
+        with patch.dict(
+            os.environ,
+            {
+                "BRA_EXECUTION_MODE": "external-test",
+                "BRA_ENVIRONMENT": "test",
+                "BRA_EXTERNAL_BASE_URL": f"http://{host}:{port}",
+            },
+        ):
+            request = self.request_block()
+            self.svc.decide(request["approval_id"], "approve", "soc_operator", "Test Operator")
+            executed = self.svc.execute_approved(request["approval_id"])
+            self.assertTrue(executed["external"])
+            self.assertTrue(executed["verification"]["verified"])
+            self.assertEqual(state.flows["F004"], "blocked")
+            rolled_back = self.svc.rollback_execution(executed["execution_id"])
+            self.assertEqual(rolled_back["state"], "active")
+            self.assertEqual(state.flows["F004"], "active")
 
     def test_role_level_is_enforced_and_logged(self):
         r = self.svc.request("isolate_endpoint", "ws-eng01", "Contain", FAILOVER)
