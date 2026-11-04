@@ -1,0 +1,12 @@
+function_id,requires_type,requires_id,role,note
+checkout_availability,device,order-app01,primary,Primary dependency for checkout_availability.
+checkout_availability,flow,WEB001,primary,Primary dependency for checkout_availability.
+checkout_availability,flow,WEB002,primary,Primary dependency for checkout_availability.
+checkout_availability,account,svc-checkout,primary,Primary dependency for checkout_availability.
+checkout_availability,device,order-app02,backup,Backup dependency for checkout_availability.
+checkout_availability,flow,WEB008,backup,Backup dependency for checkout_availability.
+checkout_availability,account,svc-checkout-standby,backup,Backup dependency for checkout_availability.
+checkout_availability,device,checkout-api,shared,Shared dependency for checkout_availability.
+checkout_availability,device,order-db,shared,Shared dependency for checkout_availability.
+order_admin,device,order-app01,primary,Primary dependency for order_admin.
+order_admin,account,checkout-support,primary,Primary dependency for order_admin.

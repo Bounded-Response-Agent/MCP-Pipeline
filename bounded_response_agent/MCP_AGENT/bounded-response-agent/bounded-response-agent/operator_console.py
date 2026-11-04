@@ -1,73 +1,105 @@
-"""Human operator console: the only way to approve or deny a request.
-
-The agent has no tool for this, so it cannot approve its own work. Run it in a second
-terminal while the agent waits, or use the inline prompt in client.py.
-
-  python operator_console.py list
-  python operator_console.py show APR-0001
-  python operator_console.py approve APR-0001 --role soc_operator --name "R. Nakamura" --note "OK"
-  python operator_console.py deny APR-0001 --role soc_operator --name "R. Nakamura" --note "Wait"
-  python operator_console.py audit --limit 20
-  python operator_console.py verify
-"""
+"""Trusted local operator console for the simulator."""
 
 import argparse
+import getpass
+import hashlib
+import hmac
 import json
+import os
+import secrets
 import sys
+from pathlib import Path
 
 from approvals import ApprovalService
+from lab_backend import load_lab
+from profiles import scenario_from_environment
 from response_logic import ResponseError, Scenario
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Approve or deny response actions as a human operator.")
+OPERATORS = {"soc-watch": "soc_operator", "ot-watch": "ot_supervisor"}
+
+
+def credential(password: str, salt: str) -> str:
+    return hashlib.scrypt(password.encode(), salt=bytes.fromhex(salt), n=2**14, r=8, p=1).hex()
+
+
+def provision(path: Path, passwords: dict[str, str]) -> None:
+    if set(passwords) != OPERATORS.keys() or any(len(password) < 12 for password in passwords.values()):
+        raise ResponseError("Each operator needs a passphrase of at least 12 characters.")
+    if len(set(passwords.values())) != len(passwords):
+        raise ResponseError("Use different passphrases for the two roles.")
+    records = {}
+    for identity, password in passwords.items():
+        salt = secrets.token_hex(16)
+        records[identity] = {"salt": salt, "digest": credential(password, salt)}
+    with path.open("x", encoding="utf-8") as file:
+        json.dump(records, file, indent=2)
+
+
+def authenticate(path: Path, identity: str, password: str) -> str:
+    records = json.loads(path.read_text(encoding="utf-8"))
+    entry = records.get(identity)
+    if identity not in OPERATORS or not entry or not hmac.compare_digest(
+        credential(password, entry["salt"]), entry["digest"]
+    ):
+        raise ResponseError("Operator authentication failed.")
+    return OPERATORS[identity]
+
+
+def read_passphrase(prompt: str) -> str:
+    if sys.stdin.isatty():
+        return getpass.getpass(prompt)
+    return sys.stdin.readline().rstrip("\r\n")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
-    sub.add_parser("list", help="show all approvals")
-    show = sub.add_parser("show", help="show one approval in full")
+    sub.add_parser("provision", help="assign separate credentials to the preassigned simulator roles")
+    sub.add_parser("list")
+    show = sub.add_parser("show")
     show.add_argument("approval_id")
-    for name in ("approve", "deny"):
-        cmd = sub.add_parser(name, help=f"{name} a pending request")
-        cmd.add_argument("approval_id")
-        cmd.add_argument("--role", required=True, help="your role, e.g. soc_operator or ot_supervisor")
-        cmd.add_argument("--name", required=True, help="your name, recorded in the audit log")
-        cmd.add_argument("--note", help="optional comment")
-    audit = sub.add_parser("audit", help="show recent audit entries")
-    audit.add_argument("--limit", type=int, default=20)
-    sub.add_parser("verify", help="check the audit log's hash chain")
-    return parser
-
-
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    service = ApprovalService(Scenario())
+    for name in ("approve", "deny", "authorize-rollback"):
+        command = sub.add_parser(name)
+        command.add_argument("reference")
+        command.add_argument("--operator", required=True, choices=OPERATORS)
+        command.add_argument("--note", required=name == "authorize-rollback")
+    sub.add_parser("audit")
+    sub.add_parser("verify")
+    args = parser.parse_args()
+    lab = load_lab()
+    service = ApprovalService(lab or scenario_from_environment(), lab.lab["state_dir"] if lab else None)
+    path = Path(os.environ.get("BRA_OPERATOR_FILE", "operators.local.json"))
     try:
-        if args.command == "list":
-            rows = service.list_approvals()
-            if not rows:
-                print("No approvals yet.")
-            for r in rows:
-                print(
-                    f"{r['approval_id']}  {r['status']:<9} needs {r['required_role']:<13} {r['action']}:{r['target']}"
-                )
+        if args.command == "provision":
+            passwords = {}
+            for identity, role in OPERATORS.items():
+                password = read_passphrase(f"New passphrase for {identity} ({role}): ")
+                if read_passphrase("Confirm passphrase: ") != password:
+                    raise ResponseError("Passphrases differ.")
+                passwords[identity] = password
+            provision(path, passwords)
+            result = {"operators": OPERATORS}
+        elif args.command == "list":
+            result = service.list_approvals()
         elif args.command == "show":
-            print(json.dumps(service.status(args.approval_id), indent=2))
-        elif args.command in ("approve", "deny"):
-            result = service.decide(args.approval_id, args.command, args.role, args.name, args.note)
-            print(f"{result['approval_id']} is now {result['status']} (by {args.name}, {args.role}).")
+            result = service.status(args.approval_id)
         elif args.command == "audit":
-            for e in service.audit.read(args.limit):
-                print(
-                    f"{e['seq']:>3} {e['ts']} {e['event']:<28} {e['actor']}  "
-                    f"{e.get('action', '')}:{e.get('target', '')}"
-                )
+            result = service.audit.read(limit=200)
         elif args.command == "verify":
             result = service.audit.verify()
-            print(json.dumps(result, indent=2))
-            return 0 if result["ok"] else 1
-    except ResponseError as exc:
+        else:
+            role = authenticate(path, args.operator, read_passphrase("Operator passphrase: "))
+            if args.command == "authorize-rollback":
+                service.authorize_rollback(args.reference, role, args.operator, args.note)
+                result = {"execution_id": args.reference, "status": "rollback_authorized"}
+            else:
+                result = service.decide(args.reference, args.command, role, args.operator, args.note)
+        print(json.dumps(result, indent=2))
+        return int(args.command == "verify" and not result["ok"])
+    except (ResponseError, OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
-    return 0
 
 
 if __name__ == "__main__":

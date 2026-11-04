@@ -1,0 +1,3 @@
+function_id,name,safety_critical,max_tolerable_gap_s,primary_asset,backup_asset,backup_ready,failover_time_s,notes
+checkout_availability,Checkout availability,true,30,order-app01,order-app02,true,8,Checkout must remain reachable.
+order_admin,Order administration,false,86400,order-app01,,false,0,Administrative functions may be interrupted temporarily.

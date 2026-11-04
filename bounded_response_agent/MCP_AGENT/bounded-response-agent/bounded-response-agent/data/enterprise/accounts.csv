@@ -1,0 +1,4 @@
+account,type,owner,privilege,bound_hosts,used_by_function,revocable_by_agent,notes
+checkout-support,user,Commerce support,standard-support,order-app01,order_admin,true,Suspected compromised lab support account
+svc-checkout,service,,read-only,order-app01,checkout_availability,false,Primary checkout health identity
+svc-checkout-standby,service,,read-only,order-app02,checkout_availability,false,Standby checkout health identity

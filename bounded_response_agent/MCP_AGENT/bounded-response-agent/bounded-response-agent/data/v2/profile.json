@@ -1,0 +1,22 @@
+{
+  "id": "shipboard",
+  "name": "Shipboard OT",
+  "monitor": "cooling_monitoring",
+  "health_label": "Cooling telemetry",
+  "source_label": "Cooling system poller",
+  "legitimate_scope_penalty": {
+    "F005": 2,
+    "F006": 2
+  },
+  "isolation_supported": true,
+  "poll_interval_s": 15,
+  "lab": {
+    "flow_ports": {
+      "F004": 8004,
+      "F005": 8005,
+      "F006": 8006
+    },
+    "account": "eng.mokoa",
+    "firewall": "nftables"
+  }
+}

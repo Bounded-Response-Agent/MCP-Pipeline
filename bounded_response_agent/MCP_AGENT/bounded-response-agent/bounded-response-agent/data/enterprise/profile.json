@@ -1,0 +1,17 @@
+{
+  "id": "enterprise",
+  "name": "Enterprise commerce",
+  "monitor": "checkout_availability",
+  "health_label": "Checkout availability",
+  "source_label": "Order service instance",
+  "legitimate_scope_penalty": {},
+  "isolation_supported": false,
+  "poll_interval_s": 2,
+  "lab": {
+    "flow_ports": {
+      "WEB004": 8004
+    },
+    "account": "checkout-support",
+    "firewall": "iptables"
+  }
+}

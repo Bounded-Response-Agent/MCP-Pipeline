@@ -80,5 +80,6 @@
   "open_questions": [
     "Is svc-cool-poll also exposed on ws-eng01?",
     "Has jump01 been accessed beyond the RDP session?"
-  ]
+  ],
+  "title": "Engineering workstation compromise"
 }

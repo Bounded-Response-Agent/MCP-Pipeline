@@ -1,14 +1,5 @@
-"""Bounded Response Agent MCP server (steps 2 and 3: analysis, approval and audit).
+"""MCP tools for defensive response planning and policy-gated simulation."""
 
-The analysis tools are read-only: they explain the situation, check policy, and predict
-mission impact so the agent can recommend the least disruptive effective response. The
-approval tools let the agent ask a human for permission and read the answer. There is
-deliberately no tool that approves or denies; only a human can, through operator_console.py
-or the prompt in client.py. Execution, verification and rollback come in later steps.
-
-Logic lives in response_logic.py and approvals.py so it can be tested without the MCP package.
-The previous quarantine demo is kept in legacy/.
-"""
 
 import asyncio
 import time
@@ -18,16 +9,21 @@ from mcp.server.mcpserver import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from approvals import ApprovalService
+from lab_backend import load_lab
+from profiles import scenario_from_environment
 from response_logic import ResponseError, Scenario
 
 mcp = MCPServer("bounded-response-agent")
-scenario = Scenario()
-approvals = ApprovalService(scenario)
+lab = load_lab()
+scenario = lab or scenario_from_environment()
+approvals = ApprovalService(scenario, lab.lab["state_dir"] if lab else None)
 
 
 def _run(fn, *args, **kwargs):
     """Call scenario logic and surface ResponseError messages to the model."""
     try:
+        if getattr(fn, "__self__", None) is scenario:
+            approvals.load_environment()
         return fn(*args, **kwargs)
     except ResponseError as exc:
         raise ToolError(str(exc)) from exc
@@ -207,6 +203,26 @@ def list_response_options(case_id: str | None = None, assume_done: list[str] | N
 
 
 @mcp.tool()
+def get_environment_mode() -> dict[str, str]:
+    """Identify which environment will apply approved actions."""
+    return {"mode": "live lab" if lab else "simulator", "profile": scenario.profile["id"]}
+
+
+@mcp.tool()
+def compare_response_plans() -> dict[str, Any]:
+    """Compare safe response plans by projected coverage and mission disruption."""
+    return _run(scenario.compare_response_plans)
+
+
+@mcp.tool()
+def observe_response_outcomes() -> dict[str, Any]:
+    """Check simulated hostile traffic, fresh login attempts, and cooling telemetry."""
+    approvals.load_environment()
+    return _run(lambda: {"mode": "live lab" if lab else "simulator",
+                         "probes": scenario.observe_threats(), "cooling": scenario.observe_cooling()})
+
+
+@mcp.tool()
 def request_operator_approval(
     action: str, rationale: str, target: str | None = None, assume_done: list[str] | None = None
 ) -> dict[str, Any]:
@@ -218,8 +234,7 @@ def request_operator_approval(
         action: A response action name from get_response_policy (not continue_monitoring).
         rationale: Why this action, in one or two sentences (required).
         target: Flow id, account, device or function id the action applies to.
-        assume_done: Optional earlier steps assumed complete, e.g.
-            ['failover_to_backup:cooling_monitoring'].
+        assume_done: Compatibility argument. Nonempty values are refused here.
     """
     return _run(approvals.request, action, target, rationale, assume_done)
 
@@ -304,7 +319,7 @@ def verify_system_state(execution_id: str) -> dict[str, Any]:
 
 @mcp.tool()
 def rollback_action(execution_id: str) -> dict[str, Any]:
-    """Rollback a simulated execution to its captured pre-action state."""
+    """Reverse the execution only with current operator authorization and safe recovery checks."""
     return _run(approvals.rollback_execution, execution_id)
 
 

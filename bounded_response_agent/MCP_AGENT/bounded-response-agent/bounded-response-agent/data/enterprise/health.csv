@@ -1,0 +1,4 @@
+timestamp,system,metric,value,unit,normal_min,normal_max,status
+2026-10-12T21:40:00Z,order-app01,checkout_poll_age,2,s,0,6,ok
+2026-10-12T21:40:00Z,order-app02,standby_poll_test,pass,,,,ok
+2026-10-12T21:40:00Z,checkout-api,health,ok,,,,ok

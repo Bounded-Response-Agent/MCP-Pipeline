@@ -1,0 +1,6 @@
+timestamp,source,src,dst,dst_port,action,severity,detail
+2026-10-12T20:55:10Z,edr,order-app01,,,alert,medium,Unexpected process opened an outbound session
+2026-10-12T21:00:03Z,firewall,order-app01,198.51.100.77,443,allow,high,Repeated requests to an unrecognized external destination
+2026-10-12T21:18:09Z,idp,checkout-support,order-app01,,allow,high,Unexpected login for checkout support
+2026-10-12T21:30:05Z,firewall,order-app01,checkout-api,443,allow,info,Checkout health check passed
+2026-10-12T21:30:09Z,firewall,order-app02,checkout-api,443,allow,info,Standby checkout health check passed

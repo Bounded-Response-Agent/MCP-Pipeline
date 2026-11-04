@@ -1,0 +1,5 @@
+flow_id,src_host,dst_host,dst_ip,dst_port,protocol,purpose,status,mission_critical,function_id
+WEB001,order-app01,checkout-api,10.30.10.10,443,https,Checkout availability checks,active,true,checkout_availability
+WEB002,order-app01,order-db,10.30.20.5,5432,postgresql,Order persistence,active,true,checkout_availability
+WEB004,order-app01,,198.51.100.77,443,https,Suspected unauthorized egress,active,false,
+WEB008,order-app02,checkout-api,10.30.10.10,443,https,Standby checkout health checks,standby,true,checkout_availability

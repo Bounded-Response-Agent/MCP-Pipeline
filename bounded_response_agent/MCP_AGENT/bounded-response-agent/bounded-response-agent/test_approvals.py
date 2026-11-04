@@ -2,17 +2,13 @@
 
 import ast
 import json
-import os
 import tempfile
-import threading
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from unittest.mock import patch
 
 from approvals import ApprovalService
 from response_logic import ResponseError, Scenario
-from test_environment import TestEnvironmentState, create_server
 
 FAILOVER = ["failover_to_backup:cooling_monitoring"]
 SERVER = Path(__file__).parent / "server.py"
@@ -30,26 +26,13 @@ class Clock:
 
 
 class ApprovalTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.scenario = Scenario()
-
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        self.environment = patch.dict(
-            os.environ,
-            {
-                "BRA_EXECUTION_MODE": "",
-                "BRA_ENVIRONMENT": "",
-                "BRA_EXTERNAL_BASE_URL": "",
-                "BRA_EXTERNAL_TOKEN": "",
-            },
-        )
-        self.environment.start()
-        self.addCleanup(self.environment.stop)
         self.clock = Clock()
+        self.scenario = Scenario()
         self.svc = ApprovalService(self.scenario, self.tmp.name, self.clock)
+        self.scenario.fault = None
 
     def request_block(self, flow="F004"):
         return self.svc.request("block_network_flow", flow, "Stop traffic to the suspected C2 host")
@@ -68,7 +51,12 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(len(r["plan_hash"]), 64)
 
     def test_supervisor_needed_for_isolation_after_failover(self):
-        r = self.svc.request("isolate_endpoint", "ws-eng01", "Contain the host", FAILOVER)
+        before = self.svc.request("isolate_endpoint", "ws-eng01", "Contain the host", FAILOVER)
+        self.assertEqual(before["verdict"], "hypothetical_preconditions")
+        failover = self.svc.request("failover_to_backup", "cooling_monitoring", "Preserve telemetry")
+        self.svc.decide(failover["approval_id"], "approve", "ot_supervisor", "OT watch")
+        self.assertEqual(self.svc.execute_approved(failover["approval_id"])["status"], "verified")
+        r = self.svc.request("isolate_endpoint", "ws-eng01", "Contain the host")
         self.assertEqual(r["required_role"], "ot_supervisor")
 
     def test_refused_requests_create_no_approval_but_are_audited(self):
@@ -104,6 +92,7 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(first["plan_hash"], second["plan_hash"])
 
     def test_case_cap_forces_human_review(self):
+        self.scenario.policy["global_rules"]["max_actions_per_case_without_review"] = 5
         for action, flow in (
             ("block_network_flow", "F004"),
             ("block_network_flow", "F005"),
@@ -133,12 +122,13 @@ class ApprovalTests(unittest.TestCase):
 
         executed = self.svc.execute_approved(request["approval_id"])
 
-        self.assertEqual(executed["status"], "executed")
+        self.assertEqual(executed["status"], "verified")
         self.assertTrue(executed["verification"]["verified"])
         self.assertEqual(self.scenario.runtime["flow_status"]["F004"], "blocked")
         verified = self.svc.verify_execution(executed["execution_id"])
         self.assertTrue(verified["verified"])
 
+        self.svc.authorize_rollback(executed["execution_id"], "soc_operator", "R. Nakamura", "Rule superseded")
         rolled_back = self.svc.rollback_execution(executed["execution_id"])
         self.assertEqual(rolled_back["status"], "rolled_back")
         self.assertEqual(self.scenario.runtime["flow_status"]["F004"], "active")
@@ -152,35 +142,37 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(self.scenario.runtime["flow_status"]["F004"], "active")
         self.assertEqual(self.svc.audit.read(event="execution_blocked")[0]["approval_id"], request["approval_id"])
 
-    def test_approved_action_can_execute_verify_and_rollback_in_external_test_environment(self):
-        state = TestEnvironmentState()
-        http_server = create_server(state)
-        thread = threading.Thread(target=http_server.serve_forever)
-        thread.start()
-        self.addCleanup(http_server.server_close)
-        self.addCleanup(thread.join)
-        self.addCleanup(http_server.shutdown)
-        host, port = http_server.server_address
-        with patch.dict(
-            os.environ,
-            {
-                "BRA_EXECUTION_MODE": "external-test",
-                "BRA_ENVIRONMENT": "test",
-                "BRA_EXTERNAL_BASE_URL": f"http://{host}:{port}",
-            },
-        ):
-            request = self.request_block()
-            self.svc.decide(request["approval_id"], "approve", "soc_operator", "Test Operator")
-            executed = self.svc.execute_approved(request["approval_id"])
-            self.assertTrue(executed["external"])
-            self.assertTrue(executed["verification"]["verified"])
-            self.assertEqual(state.flows["F004"], "blocked")
-            rolled_back = self.svc.rollback_execution(executed["execution_id"])
-            self.assertEqual(rolled_back["state"], "active")
-            self.assertEqual(state.flows["F004"], "active")
+    def test_retry_after_restart_does_not_reapply(self):
+        approval = self.request_block()["approval_id"]
+        self.svc.decide(approval, "approve", "soc_operator", "SOC watch")
+        original = self.svc.execute_approved(approval)
+        other = ApprovalService(Scenario(), self.tmp.name, self.clock)
+        replay = other.execute_approved(approval)
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["execution_id"], original["execution_id"])
+        self.assertEqual(len(other.audit.read(event="action_applied")), 1)
+
+    def test_isolation_rechecks_backup_health_after_approval(self):
+        failover = self.svc.request("failover_to_backup", "cooling_monitoring", "Preserve telemetry")
+        self.svc.decide(failover["approval_id"], "approve", "ot_supervisor", "OT watch")
+        self.svc.execute_approved(failover["approval_id"])
+        isolate = self.svc.request("isolate_endpoint", "ws-eng01", "Contain residual movement")
+        self.svc.decide(isolate["approval_id"], "approve", "ot_supervisor", "OT watch")
+        self.scenario.fault = "backup_silent"
+        with self.assertRaisesRegex(ResponseError, "observed preconditions"):
+            self.svc.execute_approved(isolate["approval_id"])
+        self.assertFalse(self.scenario.runtime["device_isolated"]["ws-eng01"])
+
+    def test_stale_policy_is_rejected_after_approval(self):
+        approval = self.request_block()["approval_id"]
+        self.svc.decide(approval, "approve", "soc_operator", "SOC watch")
+        self.scenario.policy["policy_version"] = "changed"
+        with self.assertRaisesRegex(ResponseError, "policy"):
+            self.svc.execute_approved(approval)
+        self.assertEqual(self.scenario.runtime["flow_status"]["F004"], "active")
 
     def test_role_level_is_enforced_and_logged(self):
-        r = self.svc.request("isolate_endpoint", "ws-eng01", "Contain", FAILOVER)
+        r = self.svc.request("failover_to_backup", "cooling_monitoring", "Preserve telemetry")
         with self.assertRaises(ResponseError):
             self.svc.decide(r["approval_id"], "approve", "soc_operator", "R. Nakamura")
         self.assertEqual(self.svc.status(r["approval_id"])["status"], "pending")
@@ -188,7 +180,7 @@ class ApprovalTests(unittest.TestCase):
         self.assertEqual(self.svc.decide(r["approval_id"], "approve", "ship_cio", "Captain")["status"], "approved")
 
     def test_lower_role_may_still_deny(self):
-        r = self.svc.request("isolate_endpoint", "ws-eng01", "Contain", FAILOVER)
+        r = self.svc.request("failover_to_backup", "cooling_monitoring", "Preserve telemetry")
         self.assertEqual(self.svc.decide(r["approval_id"], "deny", "soc_operator", "R. Nakamura")["status"], "denied")
 
     def test_a_decision_cannot_be_changed(self):

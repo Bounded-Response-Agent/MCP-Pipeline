@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bounded Response Agent</title>
+<link rel="stylesheet" href="/assets/console.css">
+<script src="/assets/console.js" defer></script>
+</head>
+<body>
+<aside>
+  <div class="brand"><span class="mark" aria-hidden="true">◇</span><div>BOUNDED RESPONSE AGENT</div></div>
+  <nav aria-label="Incident navigation"><a href="#incident">01 <span>Incident</span></a><a href="#assistant">02 <span>Conversation</span></a><a href="#approvals">03 <span>Decisions</span></a><a href="#audit">04 <span>Evidence</span></a></nav>
+  <div class="scope"><span class="dot"></span><div>Local operator console<small>Isolated exercise environment</small></div></div>
+</aside>
+<main id="incident">
+  <header><span class="crumb">OPERATIONS / ACTIVE CASE</span><div class="buttons"><button id="switch-case" type="button" hidden>Switch incident</button><button id="refresh">↻ Refresh</button></div></header>
+  <section class="hero">
+    <div class="eyebrow"><span id="mode" class="pill">Connecting</span> <span id="case">CASE WORKSPACE</span></div>
+    <h1 id="case-title">No active incident</h1>
+    <p id="summary">Select an environment and an incident to begin.</p>
+  </section>
+  <div id="message" role="status" aria-live="polite"></div>
+  <section class="panel" id="case-picker">
+    <div class="sectionhead"><div><div class="kicker">WORKSPACE</div><h2>Open an incident</h2></div></div>
+    <form id="case-form" class="form-grid">
+      <label>Environment <select id="case-environment"></select></label>
+      <label>Incident <select id="case-selection" name="case" required></select></label>
+      <button type="submit" class="primary">Open incident</button>
+    </form>
+    <section class="intake" aria-label="Incident intake">
+      <div class="sectionhead"><h3>Incident intake</h3><button type="button" id="scan-intake" hidden>Check Suricata alerts</button></div>
+      <div id="intake-queue"></div>
+    </section>
+    <details><summary>Import a SOC handoff into the simulator</summary>
+      <p>Choose a simulator environment and paste JSON with case_id, title, summary, produced_by, and findings. References must match the selected environment inventory.</p>
+      <form id="case-import"><label>SOC handoff JSON<textarea name="incident" rows="6" maxlength="90000" required></textarea></label>
+      <button type="submit">Import incident</button></form>
+    </details>
+  </section>
+  <div id="case-content" hidden>
+  <section class="metrics" aria-label="Observed outcomes">
+    <article><small id="health-label">PROTECTED SERVICE</small><strong id="health">—</strong><span id="gap">Awaiting observation</span></article>
+    <article><small>MONITORING SOURCE</small><strong id="source">—</strong><span id="source-label">Service source</span></article>
+    <article><small>RESIDUAL ATTACK PATHS</small><strong id="paths">—</strong><span id="probes">Awaiting probes</span></article>
+  </section>
+  <div class="workspace-grid">
+  <section class="panel" id="assistant">
+    <div class="sectionhead"><div><div class="kicker">AI / MCP</div><h2>Incident conversation</h2></div><span id="ai-connection" class="pill">Setup required</span></div>
+    <details id="assistant-settings" class="settings"><summary>Settings</summary>
+    <details id="ai-setup"><summary>Configure course gateway access</summary>
+      <p>The local backend holds the API key for this session. Prompts and MCP results go to the course gateway at <code>https://128.171.10.83:9443/v1</code>.</p>
+      <form id="ai-config"><div class="form-grid">
+        <label>Model ID <input name="model" value="gpt-oss-120b" required maxlength="97"></label>
+        <label>Course gateway API key <input name="key" type="password" required autocomplete="off"></label>
+      </div><div class="buttons"><button type="submit">Set up gateway</button><button type="button" id="ai-disconnect">Clear key</button></div></form>
+    </details>
+    <details id="operator-setup"><summary>Set up operator identities</summary>
+      <p>Use two different passphrases of at least 12 characters.</p>
+      <form id="operator-config"><div class="form-grid">
+        <label>SOC watch passphrase <input name="soc" type="password" required minlength="12" autocomplete="new-password"></label>
+        <label>OT supervisor passphrase <input name="ot" type="password" required minlength="12" autocomplete="new-password"></label>
+      </div><button type="submit">Create operator identities</button></form>
+    </details>
+    </details>
+    <div id="conversation" class="conversation" role="log" aria-label="Incident conversation" aria-live="polite"></div>
+    <form id="ai-prompt">
+      <label>Message the assistant <textarea name="goal" maxlength="4000" rows="3" required placeholder="Compare containment options and explain which best preserves the protected service."></textarea></label>
+      <div class="composer-actions">
+        <label>Mode <select name="mode"><option value="recommend">Recommend only</option><option value="containment">Request containment</option></select></label>
+        <button type="submit" class="primary">Send</button>
+      </div>
+    </form>
+    <div id="ai-status" role="status" aria-live="polite"></div>
+  </section>
+  <section class="panel decision-panel" id="approvals">
+    <div class="sectionhead"><div><div class="kicker">DECISION</div><h2>Response and approvals</h2></div></div>
+    <div id="recommendation"></div>
+    <div id="ai-approval"></div>
+    <div id="action-activity"></div>
+    <details id="approval-history"><summary id="approval-summary">All approvals and execution results</summary><div id="queue"></div></details>
+  </section>
+  </div>
+  <details class="panel evidence-panel" id="options">
+    <summary>Compare response options</summary>
+    <div id="choices"></div>
+  </details>
+  <details class="panel evidence-panel" id="audit">
+    <summary>Evidence, MCP activity, and audit</summary>
+    <div class="buttons trace-links"><a id="ai-export" href="/api/conversation" download="bounded-response-conversation.json" hidden>Download conversation and AI traces</a></div>
+    <details id="ai-activity" hidden><summary>Latest MCP tool activity</summary><div id="ai-events"></div></details>
+    <details><summary>Investigation findings and live alerts</summary><div id="findings"></div></details>
+    <details><summary>Audit trail</summary><span id="integrity" class="pill">Checking integrity</span><div id="events"></div></details>
+  </details>
+  </div>
+</main>
+<dialog id="decision"><form id="operator-form">
+  <h2 id="decision-title">Operator decision</h2><p id="decision-target"></p>
+  <label>Operator identity <select name="identity"><option value="soc-watch">SOC watch</option><option value="ot-watch">OT supervisor</option></select></label>
+  <label>Passphrase <input name="passphrase" type="password" required autocomplete="current-password"></label>
+  <label>Decision note <textarea name="note" rows="2"></textarea></label>
+  <div id="decision-error" role="status"></div>
+  <footer><button type="button" id="cancel">Cancel</button><button type="submit" class="primary">Confirm</button></footer>
+</form></dialog>
+</body></html>

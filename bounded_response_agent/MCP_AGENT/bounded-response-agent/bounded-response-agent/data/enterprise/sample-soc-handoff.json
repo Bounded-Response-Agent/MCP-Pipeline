@@ -1,0 +1,17 @@
+{
+  "case_id": "CASE-COMMERCE-IMPORT-001",
+  "title": "Unexpected outbound traffic from checkout host",
+  "summary": "Investigate the unexpected outbound session while maintaining checkout availability.",
+  "produced_by": "SOC investigation exercise",
+  "findings": [
+    {
+      "id": "IMPORTED-1",
+      "kind": "threat",
+      "claim": "An order-processing host contacted an unrecognized destination.",
+      "confidence": 0.91,
+      "evidence": ["The SOC observed repeated outbound requests from order-app01."],
+      "affected_assets": ["order-app01"],
+      "related_flows": ["WEB004"]
+    }
+  ]
+}

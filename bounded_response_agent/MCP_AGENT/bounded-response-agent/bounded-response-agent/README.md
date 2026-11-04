@@ -1,244 +1,108 @@
 # Bounded Response Agent
 
-## What this is
+A browser-based operator console and MCP service for the simulated shipboard cooling incident. The console is served on loopback and uses the same planning, approval, execution, verification, and audit workflow as the MCP client.
 
-A cyber-response agent that proposes containment actions in a simulated shipboard
-enterprise and OT environment, and is *bounded*: policy, mission impact and human approval
-decide what it may do, not the model. The goal is to contain an attack without causing
-unacceptable mission or safety consequences.
+## Workspaces
 
-**Scenario (`data/v2/`).** The SOC Investigation Agent reports that engineering workstation
-`ws-eng01` is very likely compromised. It beacons to an external host, moved 310 MB out,
-tries to spread over SMB and RDP, and holds a stolen `eng.mokoa` credential. It also runs
-the polling client for shipboard cooling monitoring. Isolating it would stop the spread but
-open a telemetry gap longer than the 120 s limit, unless monitoring is first failed over to
-the standby `backup-mon01`. The agent must compare the options and recommend the least
-disruptive effective one.
+Bounded Response Agent opens with **No active incident**. Select an environment and incident, then click **Open incident**.
 
-## Status
+| Environment | Built-in case | Protected function | Live firewall |
+| --- | --- | --- | --- |
+| Shipboard OT | Engineering workstation compromise | Cooling telemetry, 120-second gap limit | nftables |
+| Enterprise commerce | Suspected credential theft on order-processing host | Checkout availability, 30-second gap limit | iptables |
 
-| Step | Capability | State |
-| --- | --- | --- |
-| 1 | Scenario data, policy model | Done (`data/v2/`) |
-| 2 | Read and analysis tools: policy, mission impact, dry-run simulation | Done |
-| 3 | Human approval and tamper-evident audit log | **Done (this version)** |
-| 4 | Execution tools, post-action verification, rollback | Done (simulated state) |
-| 5 | Full demo traces and tests for the refusal and rollback paths | In progress |
+The simulator offers both profiles immediately. For a live lab, choose the matching running configuration in the launcher or start a fresh lab for that profile. The configured live workspace appears in the browser picker alongside the simulator profiles. To switch between live profiles, stop the existing lab and start the other profile from the launcher. This preserves the two exercises' separate state and audit records.
 
-The agent can recommend, obtain human approval, execute approved actions against simulated
-state, verify the result, and roll back the simulated change. It does not control real
-firewalls, identities, or endpoints.
+The **Import a SOC handoff into the simulator** panel accepts a JSON incident for a selected simulator profile. Use `data/enterprise/sample-soc-handoff.json` as an example. Imports can describe findings and refer to inventory already in the environment. Trusted profile files control policies, mission dependencies, telemetry, and the actuator allowlist. Imports are simulator-only in this release.
 
-For an external demonstration, a local REST test environment is available in
-`test_environment.py`. It is disabled by default. Start it in one terminal:
+Cases use dedicated MCP sessions, approval stores, and audit logs. A pending approval or an active AI run blocks switching. Approval fingerprints bind the case and environment workspace as well as the policy, target, and reviewed action. Existing pending approvals from versions before environment scoping must be requested again. The case picker rejects stale browser actions after a switch.
 
-```shell
-.\.venv\Scripts\python.exe test_environment.py
-```
+### Intake and response evidence
 
-Copy the printed URL and enable the explicit test-only adapter in the shell running the
-agent:
+From **Open an incident**, use **Check Suricata alerts** when a live lab is connected. Bounded Response Agent reads the current alerts via MCP, groups repeated alerts by signature and lab destination, and links supported evidence to the configured live incident. A new group or imported SOC handoff is marked **Needs review**. Opening it changes the review state to **Opened**. Intake is on demand, and opening a case grants no action approval.
+
+In **Response and approvals**, the **Action timeline** shows recorded milestones from proposal and authorization through application, verification, or recovery. Newly executed actions record a baseline before applying the change and compare it with the verification probes afterward. A successful configuration write and successful verification appear separately. The card reports mission telemetry against the case's limit and shows whether other blocked paths remained blocked after recovery. Older executions show that baseline data is unavailable when it was never recorded.
+
+### Add another environment
+
+Create a trusted profile directory with the same inventory, mission dependency, policy, telemetry, and findings files. Register it in `profiles.py`. The profile identifies the service to observe, the poll interval, and any disruption penalties. For live execution, bind only supported targets to the environment's connectors, declare those targets in the policy scope, and test the applied change, outcome probes, and rollback together. Each bundled profile designates one protected service for continuous outcome checks. Other modeled dependencies are evaluated during impact analysis.
+
+### Verify generalization
+
+- `python verify_case_workflow.py` runs both browser/MCP AI workflows using a scripted gateway and checks incident selection, validated import, case switching, and approval isolation.
+- Start a fresh live lab and run `python demo_live.py --config <path-to-config.json>` to exercise that profile through the browser service and MCP. The enterprise exercise tests scoped iptables changes, credential containment, checkout telemetry, stale-telemetry refusal, and rollback. The shipboard exercise tests nftables, approved failover, recovery, and endpoint isolation.
+
+## Browser demo on Windows
+
+Double-click **Launch Bounded Response Agent.cmd**. Choose the configuration for the running lab (such as `lab-ai`), **Simulator**, or a fresh shipboard or enterprise live lab. If an older lab is still running, you can inspect it or use **Stop live lab** before starting a fresh one. Keep the launcher open while using the console. Windows Python is required. The launcher sets up the virtual environment when needed. Podman is required for the live lab.
+
+1. Open an incident, then open **Settings → Configure course gateway access**, enter your course API key, and select **Set up gateway**. The default model is `gpt-oss-120b`. A prompt run verifies the credentials. The local backend holds the key in memory for the session. It sends the key to the course gateway at `https://128.171.10.83:9443/v1` over HTTPS and excludes it from the downloadable trace.
+2. Expand **Set up operator identities** if prompted. Create separate SOC watch and OT supervisor passphrases. Existing operator credentials continue to work.
+3. Enter a prompt, leave **Recommend only** selected, and select **Send**. The response and MCP tool activity appear in the browser.
+4. For the execution exercise, use a fresh live lab and choose **Request containment**. Ask the assistant to check the evidence for blocking F004 (shipboard) or WEB004 (enterprise), request approval for that action only, wait for the decision, and verify both traffic and cooling afterward. Review the inline request and authenticate as **SOC watch** to approve it. The AI can then call the execution tool. The MCP server verifies the approval and live preconditions.
+5. Reply in the same **Incident conversation**. Bounded Response Agent saves messages, replies, and tool traces in a local SQLite database inside the case state directory. Reopen the same incident after restarting to continue. The API key must be entered again.
+
+The conversation displays the latest 100 turns and passes up to eight completed turns from the same incident to the model, within a 24,000-character context budget. Earlier messages provide context. Tool results and approvals must be checked for the current turn. Use **Evidence, MCP activity, and audit → Download conversation and AI traces** for the complete saved record. Browser conversations are separate by case and environment. They are shared by people using the same local console and case.
+
+## Run the console on Windows
+
+From this folder:
 
 ```powershell
-$env:BRA_EXECUTION_MODE = "external-test"
-$env:BRA_ENVIRONMENT = "test"
-$env:BRA_EXTERNAL_BASE_URL = "http://127.0.0.1:PORT"
-```
-
-Only an approved `block_network_flow` action for test flow `F004` is accepted by this
-environment. The adapter sends the approval ID with the request, verifies the returned
-execution, and supports rollback. Do not point these variables at production services.
-
-The decision posture is defensive:
-
-- `APPROVED`: a state-changing request was approved by the required human role.
-- `PENDING_APPROVAL`: a state-changing action passed the dry run but still needs a human
-  decision.
-- `BLOCKED`: policy, evidence, preconditions, mission impact, role, expiry, or another
-  authority check prevents the action.
-
-`APPROVED` means authorized or ready for execution in this version; it does not claim that
-an external production system was changed. Execution is limited to simulated state or the
-explicitly opt-in local REST test environment.
-
-The original quarantine-only demo is kept in [`legacy/`](legacy/README.md).
-
-## Tools
-
-| Tool | Purpose |
-| --- | --- |
-| `get_investigation_findings` | The SOC findings: claims, confidence, evidence, affected assets, accounts and flows |
-| `get_response_policy` | Per-action disruption rank, approval role, forbidden conditions, preconditions, rollback |
-| `get_events` | The event timeline behind the findings (EDR, firewall, identity), filterable by host, source, severity, action and time |
-| `lookup_device`, `lookup_account` | Inventory facts, including `protected` and `revocable_by_agent` |
-| `get_network_flows` | Flows with purpose, status and whether mission critical |
-| `get_system_health` | Telemetry used for preconditions |
-| `get_mission_dependencies` | What each mission function needs, primary or backup, plus its gap limit |
-| `analyze_mission_impact` | Predicts which functions an action interrupts and for how long |
-| `simulate_response` | Dry run: policy, preconditions, evidence, impact, approval level and a verdict |
-| `evaluate_response_request` | Defensive gate: returns `REJECTED`, `HUMAN_REVIEW`, or `APPROVED` with an explanation and next step |
-| `evaluate_investigation_response` | Derives response candidates from the current investigation findings and applies the defensive gate to each |
-| `list_response_options` | Simulates every candidate, ranked least to most disruptive, and reports threats only a blocked option could address |
-
-`simulate_response` verdicts: `allowed`, `forbidden`, `insufficient_evidence`,
-`unacceptable_impact`, `preconditions_not_met`. `assume_done` (for example
-`["failover_to_backup:cooling_monitoring"]`) lets the agent evaluate a sequence, such as
-failover first and then isolation.
-
-Approval and audit tools:
-
-| Tool | Purpose |
-| --- | --- |
-| `request_operator_approval` | Ask a human to approve one action. The action is dry-run first; the request is refused unless the verdict is `allowed`. Creates a pending request only; nothing is executed |
-| `get_approval_status`, `wait_for_approval`, `list_approvals` | Read an approval's status: pending, approved, denied or expired |
-| `get_audit_log`, `verify_audit_log` | Read the audit log and check its hash chain |
-| `execute_approved_action` | Execute a still-valid approved plan against simulated state and verify it |
-| `verify_system_state` | Re-check the simulated state for an execution |
-| `rollback_action` | Restore the captured pre-action simulated state |
-
-There is deliberately no tool that approves or denies. See "Approval and audit" below.
-
-Errors are raised as `ToolError` so the message reaches the model.
-
-## Layout
-
-- `server.py`: MCP server exposing the analysis, approval and live integration tools.
-- `response_logic.py`: the analysis logic, plain Python so it is testable without MCP.
-- `approvals.py`: approval records and the audit log, also plain Python.
-- `operator_console.py`: the human's tool for approving and denying.
-- `client.py`: the MCP host and agent loop (OpenAI-compatible gateway).
-- `data/v2/`: scenario files. `scenario_ground_truth.json` is for tests only; the agent never reads it.
-- `test_response_logic.py`, `test_approvals.py`: unit tests. `verify_tools.py`: protocol check over MCP, no LLM.
-- `state/`: approvals and the audit log at run time (git-ignored; `reset_demo.py` clears it).
-- `legacy/`: the original demo.
-
-## Setup
-
-Requires Python 3.10 or newer. From this folder, create a virtual environment and install
-the pinned MCP dependency.
-
-**Windows (PowerShell):**
-
-```shell
 py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+$python = ".\.venv\Scripts\python.exe"
+& $python -m pip install -r requirements.txt
+& $python operator_console.py provision
+& $python web_console.py
 ```
 
-**macOS / Linux:**
+Open **http://127.0.0.1:8765** and select an incident. Provisioning gives separate passphrases to the SOC operator and the OT supervisor. Keep the passphrases and the generated operator file private. The first run uses the built-in simulator. The console displays its active mode at the top.
 
-```shell
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.txt
+In **Response options**, review the recommendation and request approval for one action at a time. In **Operator approvals**, expand the reviewed impact, then approve or deny with the assigned operator identity. Choose **Execute** after approval. The outcome cards and audit show whether the control applied, whether the targeted activity stopped, and which cooling poller is healthy. To reverse an applied action intentionally, choose **Authorize rollback**, record the reason, then choose **Run rollback**.
+
+## Run with five real integrations
+
+Install Podman and start its machine on Windows. The lab starts on an internal Podman network. Its APIs are published only to loopback, and all test traffic and control changes are confined to the lab containers. The build uses Debian packages and pinned OPA, Keycloak, and Prometheus images. Use the default ports or make sure they are available before startup.
+
+```powershell
+& $python lab/stack.py start --config lab-state/config.json
+& $python lab/stack.py seed
+$env:BRA_LAB_CONFIG = (Resolve-Path lab-state/config.json).Path
+& $python web_console.py
 ```
 
-## Check it works
+Run the console from a shell that has `BRA_LAB_CONFIG` set. Open the same local URL, select the live incident, and confirm the **live lab** badge. Shut down the console with Ctrl+C. Run `& $python lab/stack.py stop` to remove this lab's containers and network. For a fresh exercise use a new configuration directory when starting the stack again. The generated configuration contains lab-only credentials and stays outside the submission.
 
-```shell
-# Windows (PowerShell)
-.\.venv\Scripts\python.exe -m unittest -v test_response_logic test_approvals   # logic tests, no MCP needed
-.\.venv\Scripts\python.exe verify_tools.py                      # every tool over MCP, no LLM
+| Integration | Role in the exercise |
+| --- | --- |
+| **Suricata** | Inspects real packet traffic on the workstation's lab interface. The evidence view includes EVE alert timestamps, flow IDs, destination ports, and signature IDs. Flow changes require recent matching alerts. |
+| **Open Policy Agent** | Evaluates the site action allowlist, policy verdict, and observed cooling preconditions at proposal, approval, and execution. The audit records the policy result and revision. |
+| **nftables** | Applies real kernel firewall rules inside the workstation network namespace. The scoped restriction preserves the separate legitimate application path. Isolation preserves the monitoring management path. Rollback removes only the action's named rule. |
+| **Keycloak** | Disables the suspected lab user and logs out its sessions. The agent checks fresh login and an already-issued refresh token. Re-enabling the account restores its ability to log in. Terminated sessions require a new login. |
+| **Prometheus** | Scrapes successful cooling-poll timestamps from both pollers. The agent uses fresh samples to verify containment and failover. During failover the primary continues polling until the backup has a verified sample. |
 
-# macOS / Linux
-.venv/bin/python -m unittest -v test_response_logic test_approvals
-.venv/bin/python verify_tools.py
+The lab workload represents the protected service and attack paths. It uses harmless HTTP requests as stand-ins for cooling or checkout and suspicious outbound traffic. The two profiles use different firewall command interfaces. Debian iptables uses the nft compatibility backend in this lab. The firewall, detection engine, policy engine, identity service, and time-series database are real. Lab mode uses those services for policy and observations. It surfaces service failures and holds potentially uncertain writes for operator review.
+
+### Run the reproducible live exercise
+
+Start a **fresh** lab, then run:
+
+```powershell
+& $python demo_live.py --config lab-state/config.json --output live-trace.json
 ```
 
-## Run the agent
+The runner drives the web service and its MCP connection with temporary scripted operator identities. It does not need an AI gateway. It checks unsafe isolation and protected-flow refusal, approved targeted containment, a real firewall precedence conflict, a silent-backup condition, scoped recovery, verified failover, and authorized isolation. It leaves the lab in its final containment state. For a classroom presentation, use the browser and have the operator make the decisions.
 
-Set the course gateway key in your shell. The project does not include a key. The client
-uses `https://128.171.10.83:9443/v1` by default; set `LLM_BASE_URL` to override it and
-`LLM_MODEL` to choose another model. It prints every tool call, its arguments, the raw
-result and the final answer. To read the goal from JSON and save a structured JSON result,
-use `--input` and `--output`. The input file must contain a string `goal` property:
+### Verify the simulator separately
 
-```json
-{
-  "goal": "Investigate ws-eng01 and recommend the least disruptive response."
-}
+```powershell
+& $python data/v2/validate_data.py
+& $python -m unittest -v test_response_logic test_approvals
+& $python demo_mcp.py --output simulator-trace.json
 ```
 
-```shell
-# Windows (PowerShell)
-$env:LLM_API_KEY = "your-course-gateway-key"
-.\.venv\Scripts\python.exe client.py "The SOC says ws-eng01 may be compromised. What should we do?"
-.\.venv\Scripts\python.exe client.py --input request.json --output response.json
+The optional model client uses the same MCP service. Set `LLM_API_KEY` to your course key. The CLI uses the course gateway and `gpt-oss-120b` by default. `LLM_BASE_URL` and `LLM_MODEL` override those defaults when set. Use `client.py --execute` to permit the model to request and execute approved actions. Operator approval remains separate.
 
-# macOS / Linux
-export LLM_API_KEY="your-course-gateway-key"
-.venv/bin/python client.py "The SOC says ws-eng01 may be compromised. What should we do?"
-.venv/bin/python client.py --input request.json --output response.json
-```
+## Trust boundary
 
-The output JSON contains the goal, server name, discovered tools, every tool call and
-result, the final answer, and a run status (`completed` or `max_turns_exceeded`).
-
-When the agent requests approval, the client pauses and asks you to approve or deny it, so
-you play the human operator. Use `$env:BRA_MAX_TURNS` to raise the agent's turn limit (default 25).
-
-Other prompts to try:
-
-- "Recommend a response to the ws-eng01 incident and request approval for each step."- "Should we isolate ws-eng01 right now?" (expect: not yet, failover first)
-- "What if we fail over cooling monitoring first, then isolate ws-eng01?"
-- "Disable the adm.kealoha account." (expect: refused, escalate)
-- "Block the cooling telemetry flow F001." (expect: refused, mission critical)
-
-VS Code (`.vscode/mcp.json`) and Claude Desktop (`claude_desktop_config.example.json`) can
-also connect to `server.py`. The VS Code config uses the Windows project virtual
-environment; change `command` to `${workspaceFolder}/.venv/bin/python` on macOS or Linux.
-
-## Approval and audit
-
-The agent proposes and a human decides.
-
-1. The agent calls `request_operator_approval`. The server dry-runs the action and refuses
-   it unless the verdict is `allowed`. Otherwise it writes a pending approval bound to the
-   case, action and target, with the required role (`soc_operator`, or `ot_supervisor` when a
-   safety-critical function is involved) and a fingerprint of the plan the human is shown.
-2. A human decides. When `client.py` runs in a terminal it stops and asks you. Or run
-   `operator_console.py` in a second terminal (for example
-   `operator_console.py approve APR-0001 --role soc_operator --name "Your Name"`). The role
-   you give must be at least the required role, or the decision is rejected and logged.
-3. The agent reads the result with `wait_for_approval`. A pending request lapses after 900 s;
-   an approval is valid for 900 s from the decision. Expired approvals cannot be used.
-
-The model has no tool to approve or deny, so it cannot approve its own request. A test
-checks that `server.py` never exposes one.
-
-Every request, refusal, decision, rejected decision and expiry is appended to
-`state/audit.jsonl`. Each entry includes the hash of the previous one, so editing, removing,
-reordering or splicing in an entry is detected by `verify_audit_log` or
-`operator_console.py verify`. This makes tampering evident; it does not prevent someone with
-file access who rebuilds the whole chain, so keep a copy of the latest `head_hash` if that
-matters.
-
-## Demonstration plan
-
-1. **Least disruptive effective response.** Investigate, simulate, reject isolation because of the cooling gap, recommend block F004, restrict F005 and F006, disable `eng.mokoa`.
-2. **Contingency.** Failover with supervisor approval, verify, then isolate `ws-eng01`.
-3. **Refusals.** Protected device, privileged account, mission-critical flow, no approval.
-4. **Rollback.** An action fails verification or is reversed.
-
-Demos 1 and 2 can be shown now as recommendations with real approvals. The refusal demo
-works today for policy refusals and for expired, under-privileged or repeated approvals.
-Execution-related refusals and rollback need step 4.
-Capture real traces by running the client; do not paste illustrative output as captured.
-
-## Architecture
-
-The MCP server owns the data and the rules. It loads the findings, inventory, flows,
-mission dependencies, health telemetry and policy, and exposes read and analysis tools.
-Authority lives there: simulation marks a protected device, a privileged account or a
-mission-critical flow as forbidden whatever the model asks, and later steps will enforce
-approval and verification the same way. The client is the host. It starts the server over
-stdio, discovers the tools, passes their JSON schemas to the model, runs the calls the model
-requests, and feeds the results back until the model answers. The model reads the goal,
-chooses tools, reads each result before the next call, and writes the recommendation.
-The model proposes; the server decides.
-
-## Known limitations
-
-- Policy is data in `policy.json`, and the evidence rule is simple: an action needs a threat finding at or above the confidence threshold that names its target.
-- Impact analysis treats a restricted flow like a blocked one (worst case) and reports an unbounded gap until failover completes, since failover needs supervisor approval.
-- The audit log is tamper-evident, not tamper-proof (see above).
-- Approvals are recorded, but nothing consumes them yet. Step 4 will check an approval's action, target, expiry and plan fingerprint again at execution time.
-- Scenario names and IPs are invented.
+The console is a local application for the isolated exercise. The operating system account and Podman engine administer the lab. Use the web operator form or the terminal operator console to authenticate decisions. MCP exposes proposals and execution of authorized actions. Every live mutation stays in the dedicated lab namespace and identity realm. For an uncertain result, inspect the audit log and actual control state before resuming. A recorded hold requires reconciliation or a fresh lab.

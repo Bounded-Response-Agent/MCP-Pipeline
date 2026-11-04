@@ -1,0 +1,5 @@
+hostname,ip,role,zone,criticality,protected,primary_account,notes
+order-app01,10.20.30.11,order-processing-host,commerce-apps,high,false,checkout-support,Primary checkout health poller and suspected affected host
+order-app02,10.20.30.12,order-processing-host,commerce-apps,high,false,svc-checkout-standby,Standby checkout health poller
+checkout-api,10.30.10.10,checkout-service,commerce-services,critical,true,,Protected checkout endpoint
+order-db,10.30.20.5,order-database,commerce-data,critical,true,,Protected order persistence service

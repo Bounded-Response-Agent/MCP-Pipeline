@@ -1,7 +1,7 @@
 """Approval and audit services for the Bounded Response Agent.
 
 The agent can ask for approval, but only a human operator can grant it, and only through
-a channel the model has no tool for (operator_console.py, or the prompt in client.py).
+the authenticated local operator console.
 Every request, refusal, decision and expiry is written to a hash-chained audit log.
 
 State lives in a directory (default ./state, override with BRA_STATE_DIR):
@@ -23,11 +23,10 @@ from pathlib import Path
 from typing import Any
 
 from response_logic import ResponseError, Scenario
-from external_environment import ExternalEnvironmentError, ExternalTestEnvironment
 
 DEFAULT_STATE_DIR = Path(os.environ.get("BRA_STATE_DIR") or Path(__file__).parent / "state")
 GENESIS_HASH = "0" * 64
-APPROVAL_ID = re.compile(r"^APR-\d{4}$")
+APPROVAL_ID = re.compile(r"^APR-\d{4,}$")
 OPEN_STATUSES = ("pending", "approved")
 
 
@@ -53,27 +52,40 @@ def _sha(text: str) -> str:
 
 @contextmanager
 def _file_lock(path: Path, timeout: float = 5.0) -> Iterator[None]:
-    """Cross-process lock using an exclusively created file. Stale locks expire after 10 s."""
+    """Lock a stable file. The OS releases the lock if the process exits."""
+    if os.name == "nt":
+        import msvcrt
+
+        def lock(file):
+            msvcrt.locking(file.fileno(), msvcrt.LK_NBLCK, 1)
+
+        def unlock(file):
+            msvcrt.locking(file.fileno(), msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+
+        def lock(file):
+            fcntl.flock(file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+        def unlock(file):
+            fcntl.flock(file, fcntl.LOCK_UN)
+
     path.parent.mkdir(parents=True, exist_ok=True)
     deadline = time.monotonic() + timeout
-    while True:
-        try:
-            os.close(os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
-            break
-        except FileExistsError:
+    with path.open("a+b") as file:
+        file.seek(0)
+        while True:
             try:
-                if time.time() - path.stat().st_mtime > 10:
-                    path.unlink(missing_ok=True)
-                    continue
-            except FileNotFoundError:
-                continue
-            if time.monotonic() > deadline:
-                raise ResponseError("The state store is busy. Try again.") from None
-            time.sleep(0.05)
-    try:
-        yield
-    finally:
-        path.unlink(missing_ok=True)
+                lock(file)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise ResponseError("The state store is busy. Try again.") from None
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            unlock(file)
 
 
 class AuditLog:
@@ -152,6 +164,28 @@ class ApprovalService:
         self.dir = Path(state_dir) if state_dir else DEFAULT_STATE_DIR
         self.approvals_dir = self.dir / "approvals"
         self.audit = AuditLog(self.dir / "audit.jsonl", clock)
+        self.scenario.fault = os.environ.get("BRA_SIM_FAULT") or None
+
+    def load_environment(self) -> None:
+        path = self.dir / "environment.json"
+        if path.exists():
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            self.scenario.runtime = saved["runtime"]
+            self.scenario.executions = saved["executions"]
+
+    def _save_environment(self) -> None:
+        path = self.dir / "environment.json"
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(_canonical({"runtime": self.scenario.runtime,
+                                         "executions": self.scenario.executions}), encoding="utf-8")
+        os.replace(temporary, path)
+
+    @contextmanager
+    def _transaction(self):
+        self.dir.mkdir(parents=True, exist_ok=True)
+        with _file_lock(self.dir / "response.lock"):
+            self.load_environment()
+            yield
 
     # ------------------------------------------------------------------ storage
     def _path(self, approval_id: str) -> Path:
@@ -177,7 +211,7 @@ class ApprovalService:
     def _refresh(self, record: dict[str, Any]) -> dict[str, Any]:
         """Mark a lapsed pending or approved record as expired and log it once."""
         now = self.clock()
-        if record["status"] in OPEN_STATUSES and now > _parse(record["expires_at"]):
+        if record["status"] in OPEN_STATUSES and not record.get("execution_id") and now > _parse(record["expires_at"]):
             previous = record["status"]
             record["status"] = "expired"
             self._save(record)
@@ -205,7 +239,7 @@ class ApprovalService:
         left = int((_parse(record["expires_at"]) - self.clock()).total_seconds())
         view = dict(record)
         view["seconds_left"] = max(left, 0) if record["status"] in OPEN_STATUSES else 0
-        view["valid_for_execution"] = record["status"] == "approved"
+        view["valid_for_execution"] = record["status"] == "approved" and not record.get("execution_id")
         view["decision"] = {
             "pending": "PENDING_APPROVAL",
             "approved": "APPROVED",
@@ -226,6 +260,16 @@ class ApprovalService:
         digest = {
             "verdict": simulation["verdict"],
             "mission_severity": simulation["mission_impact"]["severity"],
+            "mission_impact": simulation["mission_impact"],
+            "required_role": simulation["approval_level_if_allowed"],
+            "evidence": simulation["evidence"],
+            "policy": self.scenario.policy,
+            "target": simulation["target"],
+            "action": simulation["action"],
+            "case_id": self.scenario.findings["case_id"],
+            "environment": self.scenario.profile["id"],
+            "environment_scope": _sha(str(self.dir.resolve())),
+            "automatic_recovery": "Scoped rollback on failed verification, subject to mission safety.",
             "predicted_state_changes": simulation["predicted_state_changes"],
             "addresses_findings": [f["id"] for f in simulation["evidence"]["findings"]],
             "assumed_done": simulation["assumed_done"],
@@ -237,19 +281,30 @@ class ApprovalService:
     def request(
         self, action: str, target: str | None, rationale: str, assume_done: list[str] | None = None
     ) -> dict[str, Any]:
-        """Ask for human approval of one action. Refused unless the dry run says 'allowed'."""
+        """Request approval using observed preconditions."""
+        with self._transaction():
+            if assume_done:
+                self.audit.append("approval_request_refused", "agent", action=action, target=target,
+                                  verdict="hypothetical_preconditions")
+                return {"status": "refused", "decision": "BLOCKED", "verdict": "hypothetical_preconditions",
+                        "reasons": ["Hypothetical preconditions are only available in planning tools."]}
+            return self._request(action, target, rationale)
+
+    def _request(self, action: str, target: str | None, rationale: str) -> dict[str, Any]:
         reason = (rationale or "").strip()
         if not reason or len(reason) > 500:
             raise ResponseError("rationale is required and must be 500 characters or fewer.")
         rules = self.scenario.get_response_policy(action)["rules"]
         if not rules.get("state_changing"):
             raise ResponseError(f"{action} does not change anything and needs no approval.")
-        sim = self.scenario.simulate_response(action, target, assume_done)
+        sim = self.scenario.simulate_response(action, target)
+        self._check_lab_policy(sim, phase="proposal")
         case_id = self.scenario.findings["case_id"]
         common = {"case_id": case_id, "action": action, "target": sim["target"]}
 
         if sim["verdict"] != "allowed":
-            self.audit.append("approval_request_refused", "agent", verdict=sim["verdict"], rationale=reason, **common)
+            self.audit.append("approval_request_refused", "agent", verdict=sim["verdict"], rationale=reason,
+                              reasons=sim["reasons"], **common)
             return {
                 "status": "refused",
                 "verdict": sim["verdict"],
@@ -258,10 +313,12 @@ class ApprovalService:
                 "next_step": "No approval was created. Pick a different action or escalate to a human.",
             }
 
+        digest, digest_hash = self.plan_digest(sim)
         stored = [r for r in self._stored() if r["case_id"] == case_id]
         for rec in (self._refresh(r) for r in stored):
             same = (rec["action"], rec["target"], rec["assume_done"]) == (action, sim["target"], sim["assumed_done"])
-            if same and rec["status"] in OPEN_STATUSES:
+            if (same and rec["status"] in OPEN_STATUSES and not rec.get("execution_id")
+                    and rec["plan_hash"] == digest_hash):
                 self.audit.append("approval_request_duplicate", "agent", approval_id=rec["approval_id"], **common)
                 return {**self._view(rec), "note": "An open approval for this exact action already exists."}
 
@@ -276,7 +333,6 @@ class ApprovalService:
                 "next_step": "Escalate to a human reviewer.",
             }
 
-        digest, digest_hash = self.plan_digest(sim)
         now = self.clock()
         expiry = self.scenario.policy["global_rules"]["approval_expiry_seconds"]
         record = {
@@ -312,90 +368,143 @@ class ApprovalService:
         }
 
     def status(self, approval_id: str) -> dict[str, Any]:
-        return self._view(self._load(approval_id))
+        with self._transaction():
+            return self._view(self._load(approval_id))
 
     def list_approvals(self, status: str | None = None) -> list[dict[str, Any]]:
         valid = ("pending", "approved", "denied", "expired")
         if status is not None and status not in valid:
             raise ResponseError(f"status must be one of: {', '.join(valid)}.")
-        views = [self._view(self._refresh(r)) for r in self._stored()]
+        with self._transaction():
+            views = [self._view(self._refresh(r)) for r in self._stored()]
         return [v for v in views if status is None or v["status"] == status]
 
+    def _check_lab_policy(self, simulation, *, phase, operator_role=None):
+        evaluate = getattr(self.scenario, "policy_decision", None)
+        if evaluate is None:
+            return
+        decision = evaluate(simulation, phase=phase, operator_role=operator_role)
+        self.audit.append("lab_policy_decision", "opa", phase=phase, **decision)
+        if simulation["verdict"] == "allowed" and not decision["allowed"]:
+            raise ResponseError("OPA denied the action. Check live evidence and protected-service telemetry.")
+
     def execute_approved(self, approval_id: str) -> dict[str, Any]:
-        """Execute one approved plan after rechecking its fingerprint and policy."""
-        record = self._load(approval_id)
-        info = {
-            "approval_id": record["approval_id"],
-            "case_id": record["case_id"],
-            "action": record["action"],
-            "target": record["target"],
-        }
-        if record["status"] != "approved":
-            self.audit.append("execution_blocked", "agent", problem=f"approval is {record['status']}", **info)
-            raise ResponseError(f"{record['approval_id']} is {record['status']}; execution is blocked.")
-        simulation = self.scenario.simulate_response(
-            record["action"], record["target"], record["assume_done"]
-        )
-        _, digest_hash = self.plan_digest(simulation)
-        if digest_hash != record["plan_hash"]:
-            self.audit.append("execution_blocked", "agent", problem="approval plan changed", **info)
-            raise ResponseError("The approved plan no longer matches current policy or evidence; execution is blocked.")
-        external = os.environ.get("BRA_EXECUTION_MODE") == "external-test"
-        if external:
+        """Apply an approval once, recording the result atomically with simulator state."""
+        with self._transaction():
+            record = self._load(approval_id)
+            execution_id = f"EXE-{record['approval_id'][4:]}"
+            previous = self.scenario.executions.get(execution_id)
+            if previous:
+                if not record.get("execution_id"):
+                    self._record_execution(record, previous["result"])
+                return {**previous["result"], "approval_id": approval_id,
+                        "current_status": previous["status"], "replayed": True}
+            info = {"approval_id": approval_id, "case_id": record["case_id"],
+                    "action": record["action"], "target": record["target"]}
+            if record["status"] != "approved":
+                self.audit.append("execution_blocked", "agent", problem=f"approval is {record['status']}", **info)
+                raise ResponseError(f"{approval_id} is {record['status']}; execution is blocked.")
+            simulation = self.scenario.simulate_response(record["action"], record["target"])
+            _, digest_hash = self.plan_digest(simulation)
+            if simulation["verdict"] != "allowed" or digest_hash != record["plan_hash"]:
+                self.audit.append("execution_blocked", "agent", problem="observed plan changed", **info)
+                raise ResponseError("The approved plan no longer matches observed preconditions, policy or impact.")
             try:
-                result = ExternalTestEnvironment().execute(
-                    approval_id, record["action"], record["target"]
-                )
-                verification = ExternalTestEnvironment().verify(result["execution_id"])
-            except ExternalEnvironmentError as exc:
-                self.audit.append("execution_blocked", "agent", problem=str(exc), **info)
-                raise ResponseError(str(exc)) from exc
-            result = {
-                **result,
-                "status": "executed" if verification.get("verified") else "verification_failed",
-                "verification": verification,
-                "external": True,
-            }
-        else:
-            result = self.scenario.execute_action(record["action"], record["target"], record["assume_done"])
-            result["external"] = False
+                self._check_lab_policy(simulation, phase="execution", operator_role=record["decided_by"]["role"])
+                before = {"cooling": self.scenario.observe_cooling(), "probes": self.scenario.observe_threats()}
+                if not before["cooling"]["healthy"]:
+                    raise ResponseError("Protected-service telemetry is unhealthy or unavailable before execution.")
+            except ResponseError as exc:
+                self.audit.append("execution_blocked", "system", problem=str(exc), **info)
+                raise
+            self.audit.append("action_started", "system", execution_id=execution_id, **info)
+            try:
+                result = self.scenario.execute_action(record["action"], record["target"], execution_id)
+            except ResponseError as exc:
+                self.audit.append("action_outcome_unconfirmed", "system", reason=str(exc), **info)
+                raise
+            result["before"] = before
+            self.scenario.executions[execution_id]["result"] = result
+            self._save_environment()
+            self._record_execution(record, result)
+            commit = getattr(self.scenario, "commit_live_action", None)
+            if commit is not None and result.get("recovery", {}).get("status") != "escalation_required":
+                commit()
+            return {**result, "approval_id": approval_id}
+
+    def _record_execution(self, record: dict[str, Any], result: dict[str, Any]) -> None:
+        info = {"approval_id": record["approval_id"], "case_id": record["case_id"],
+                "action": record["action"], "target": record["target"], "execution_id": result["execution_id"]}
+        actor = "lab" if getattr(self.scenario, "lab", None) else "simulator"
+        verification = result["verification"]
+        apply_event = "action_applied" if verification.get("configuration_applied") else "action_apply_unconfirmed"
+        self.audit.append(apply_event, actor, **info)
+        self.audit.append("action_verification", actor, observations=verification,
+                          before=result.get("before"), **info)
+        if "recovery" in result:
+            self.audit.append("automatic_recovery", actor, outcome=result["recovery"], **info)
         record["execution_id"] = result["execution_id"]
         record["execution_status"] = result["status"]
         self._save(record)
-        self.audit.append(
-            "action_executed",
-            "agent",
-            execution_id=result["execution_id"],
-            verification=result["verification"],
-            **info,
-        )
-        return {**result, "approval_id": approval_id}
 
     def verify_execution(self, execution_id: str) -> dict[str, Any]:
-        if os.environ.get("BRA_EXECUTION_MODE") == "external-test":
-            try:
-                result = ExternalTestEnvironment().verify(execution_id)
-            except ExternalEnvironmentError as exc:
-                raise ResponseError(str(exc)) from exc
-        else:
+        with self._transaction():
             result = self.scenario.verify_execution(execution_id)
-        self.audit.append("action_verified", "agent", **result)
-        return result
+            self.audit.append("action_verified", "agent", **result)
+            return result
+
+    def authorize_rollback(self, execution_id: str, role: str, name: str, note: str) -> None:
+        """Human channel. Authorize one scoped reversal after reviewing the threat reopening risk."""
+        with self._transaction():
+            record = self.scenario.executions.get(execution_id)
+            if not record or record["status"] != "executed":
+                raise ResponseError("A live execution is required.")
+            approval = self._load(f"APR-{execution_id[4:]}")
+            if self._level(role) < self._level(approval["required_role"]) or not note.strip():
+                raise ResponseError("Rollback requires the original approval level and a reason.")
+            if record["action"] == "failover_to_backup":
+                primary = self.scenario.functions[record["target"]]["primary_asset"]
+                if self.scenario.runtime["device_isolated"][primary]:
+                    raise ResponseError("Rollback would return the protected service to an isolated primary.")
+            record["rollback_authorization"] = {
+                "actor": f"operator:{name}:{role}", "note": note,
+                "expires_at": _iso(self.clock() + timedelta(seconds=900)),
+                "state_hash": _sha(_canonical(self.scenario.runtime)),
+            }
+            self._save_environment()
+            self.audit.append("rollback_authorized", f"operator:{name}:{role}", execution_id=execution_id, note=note)
 
     def rollback_execution(self, execution_id: str) -> dict[str, Any]:
-        if os.environ.get("BRA_EXECUTION_MODE") == "external-test":
+        with self._transaction():
+            record = self.scenario.executions.get(execution_id)
+            if record and record["status"] == "rolled_back":
+                return record["recovery"]
+            auth = record.get("rollback_authorization") if record else None
+            if (not auth or self.clock() > _parse(auth["expires_at"])
+                    or auth["state_hash"] != _sha(_canonical(self.scenario.runtime))):
+                self.audit.append("rollback_blocked", "agent", execution_id=execution_id)
+                raise ResponseError("Rollback requires current operator authorization for this execution.")
             try:
-                result = ExternalTestEnvironment().rollback(execution_id)
-            except ExternalEnvironmentError as exc:
-                raise ResponseError(str(exc)) from exc
-        else:
-            result = self.scenario.rollback_action(execution_id)
-        self.audit.append("action_rolled_back", "agent", **result)
-        return result
+                result = self.scenario.rollback_action(execution_id)
+            except ResponseError as exc:
+                self.audit.append("rollback_blocked", "agent", execution_id=execution_id, problem=str(exc))
+                raise
+            self._save_environment()
+            self.audit.append("action_rolled_back", auth["actor"], **result)
+            approval = self._load(f"APR-{execution_id[4:]}")
+            approval["execution_status"] = result["status"]
+            self._save(approval)
+            commit = getattr(self.scenario, "commit_live_action", None)
+            if commit is not None:
+                commit()
+            return result
 
-    # ------------------------------------------------------------------ human side
     def decide(self, approval_id: str, decision: str, role: str, name: str, note: str | None = None) -> dict[str, Any]:
-        """Record a human decision. Not exposed as a model tool."""
+        """Record a decision from the trusted operator channel."""
+        with self._transaction():
+            return self._decide(approval_id, decision, role, name, note)
+
+    def _decide(self, approval_id: str, decision: str, role: str, name: str, note: str | None) -> dict[str, Any]:
         if decision not in ("approve", "deny"):
             raise ResponseError("decision must be 'approve' or 'deny'.")
         level = self._level(role)
@@ -416,6 +525,13 @@ class ApprovalService:
         if decision == "approve" and level < self._level(record["required_role"]):
             self.audit.append("approval_decision_rejected", actor, problem=f"needs {record['required_role']}", **info)
             raise ResponseError(f"{record['approval_id']} needs {record['required_role']}; {role} is not enough.")
+        if decision == "approve":
+            simulation = self.scenario.simulate_response(record["action"], record["target"])
+            _, digest_hash = self.plan_digest(simulation)
+            self._check_lab_policy(simulation, phase="approval", operator_role=role)
+            if simulation["verdict"] != "allowed" or digest_hash != record["plan_hash"]:
+                self.audit.append("approval_decision_rejected", actor, problem="reviewed plan is stale", **info)
+                raise ResponseError("The reviewed plan changed. A fresh request is required.")
         now = self.clock()
         record["status"] = "approved" if decision == "approve" else "denied"
         record["decided_by"] = {"name": who, "role": role}
@@ -425,5 +541,5 @@ class ApprovalService:
             record["expires_at"] = _iso(now + timedelta(seconds=expiry))
         record["decision_note"] = (note or "").strip() or None
         self._save(record)
-        self.audit.append(f"approval_{record['status']}", actor, note=record["decision_note"], **info)
+        self.audit.append(f"approval_{record['status']}", actor, note=record["decision_note"], plan_hash=record["plan_hash"], **info)
         return self._view(record)

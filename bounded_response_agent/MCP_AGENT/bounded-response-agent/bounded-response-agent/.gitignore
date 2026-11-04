@@ -1,5 +1,19 @@
-.venv/
 __pycache__/
-*.py[cod]
-.env
+.venv/
+operators.local.json
 state/
+lab-state/
+lab-run/
+
+# Local incident conversations and generated lab credentials
+*.sqlite3
+*.sqlite3-*
+lab-*/config.json
+lab-*/response-state/
+
+# Local credentials, generated traces, and setup logs
+.env
+.env.*
+!.env.example
+*-trace.json
+bounded-response-setup.log

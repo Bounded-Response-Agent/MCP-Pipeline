@@ -1,0 +1,35 @@
+{
+  "case_id": "CASE-COMMERCE-001",
+  "title": "Suspected credential theft on order-processing host",
+  "summary": "A support account and outbound session on order-app01 show signs of compromise. Preserve checkout availability during containment.",
+  "produced_by": "SOC Investigation Agent",
+  "findings": [
+    {
+      "id": "COM-1",
+      "kind": "threat",
+      "claim": "Unexpected outbound traffic from the order-processing host",
+      "confidence": 0.95,
+      "evidence": [
+        "SOC observed repeated unexpected outbound requests"
+      ],
+      "related_flows": [
+        "WEB004"
+      ],
+      "affected_assets": [
+        "order-app01"
+      ]
+    },
+    {
+      "id": "COM-2",
+      "kind": "threat",
+      "claim": "Suspected theft of checkout support credentials",
+      "confidence": 0.9,
+      "evidence": [
+        "Unexpected support-account sign-ins"
+      ],
+      "affected_accounts": [
+        "checkout-support"
+      ]
+    }
+  ]
+}

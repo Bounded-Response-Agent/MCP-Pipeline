@@ -1,0 +1,4 @@
+FROM docker.io/library/debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends python3 nftables iptables suricata && rm -rf /var/lib/apt/lists/*
+COPY workload.py detection.rules /lab/
+WORKDIR /lab

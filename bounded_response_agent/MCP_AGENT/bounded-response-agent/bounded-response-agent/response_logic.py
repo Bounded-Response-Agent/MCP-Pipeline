@@ -10,6 +10,7 @@ from __future__ import annotations
 import csv
 import ipaddress
 import json
+from itertools import product
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -37,7 +38,7 @@ def _check(name: str, passed: bool, detail: str) -> dict[str, Any]:
 
 
 class Scenario:
-    def __init__(self, data_dir: Path | str = DEFAULT_DATA):
+    def __init__(self, data_dir: Path | str = DEFAULT_DATA, *, case_file=None):
         d = Path(data_dir)
         self.devices = {r["hostname"]: r for r in _read_csv(d / "devices.csv")}
         self.accounts = {r["account"]: r for r in _read_csv(d / "accounts.csv")}
@@ -46,7 +47,9 @@ class Scenario:
         self.dependencies = _read_csv(d / "dependencies.csv")
         self.health = _read_csv(d / "health.csv")
         self.events = _read_csv(d / "events.csv")
-        self.findings = json.loads((d / "findings.json").read_text(encoding="utf-8"))
+        self.profile = json.loads((d / "profile.json").read_text(encoding="utf-8"))
+        self.monitor = self.profile["monitor"]
+        self.findings = json.loads(Path(case_file or d / "findings.json").read_text(encoding="utf-8"))
         self.policy = json.loads((d / "policy.json").read_text(encoding="utf-8"))
         self.runtime = {
             "flow_status": {flow_id: row["status"] for flow_id, row in self.flows.items()},
@@ -57,7 +60,7 @@ class Scenario:
             },
         }
         self.executions: dict[str, dict[str, Any]] = {}
-        self._next_execution_id = 1
+        self.fault: str | None = None
 
     # ------------------------------------------------------------------ read tools
     def lookup_device(self, hostname: str) -> dict[str, str]:
@@ -403,8 +406,11 @@ class Scenario:
     ) -> dict[str, Any]:
         """Dry run: policy check, preconditions, evidence and mission impact. Changes nothing."""
         rules = self._rules(action)
-        done = self._parse_assumed(assume_done) | self._runtime_done()
+        hypothetical = self._parse_assumed(assume_done)
+        done = hypothetical | self._runtime_done()
         ttype, tgt = self._resolve_target(action, target)
+        if (action, tgt) in done:
+            done.remove((action, tgt))
         impact = self.analyze_mission_impact(
             action, tgt, [f"{a}:{t}" for a, t in sorted(done)]
         )
@@ -416,7 +422,7 @@ class Scenario:
 
         if action in FLOW_ACTIONS:
             f = self.flows[tgt]
-            already = any(a in FLOW_ACTIONS and t == tgt for a, t in done)
+            already = any(a in FLOW_ACTIONS and t == tgt for a, t in done | hypothetical)
             if _true(f["mission_critical"]):
                 forbidden.append(
                     f"Flow {tgt} is mission critical ({f['purpose']}); policy forbids blocking or restricting it."
@@ -450,7 +456,7 @@ class Scenario:
             pre.append(
                 _check(
                     "account_enabled",
-                    self.runtime["account_enabled"][tgt] and ("disable_account", tgt) not in done,
+                    self.runtime["account_enabled"][tgt] and ("disable_account", tgt) not in (done | hypothetical),
                     "account is currently enabled." if self.runtime["account_enabled"][tgt] else "account is disabled.",
                 )
             )
@@ -460,14 +466,26 @@ class Scenario:
             if _true(d["protected"]):
                 forbidden.append(f"{tgt} is a protected {d['role']}; the agent may not act on it. Escalate.")
             pre.append(_check("device_not_protected", not _true(d["protected"]), f"protected={d['protected']}."))
+            pre.append(_check("endpoint_reachable", not self.runtime["device_isolated"][tgt],
+                              "endpoint is available for containment."))
             dependents = self._safety_functions_depending_on_device(tgt)
             for fid in dependents:
-                ok = ("failover_to_backup", fid) in done
+                step = ("failover_to_backup", fid)
+                observed = self.observe_cooling()
+                verified_failover = any(
+                    record["action"] == step[0] and record["target"] == fid
+                    and record["status"] == "executed" and record["result"]["verification"]["verified"]
+                    for record in self.executions.values()
+                )
+                ok = step in hypothetical or (
+                    fid == self.monitor and step in done and verified_failover and observed["source"] == self.functions[fid]["backup_asset"]
+                    and observed["healthy"]
+                )
                 pre.append(
                     _check(
                         f"failover_completed:{fid}",
                         ok,
-                        "failover assumed complete." if ok else f"{fid} still runs on {tgt}; fail over first.",
+                        "failover verified or hypothetical for planning." if ok else f"{fid} needs verified backup telemetry.",
                     )
                 )
             pre.append(_check("predicted_gap_within_limit", impact["severity"] != "unacceptable", impact["summary"]))
@@ -492,7 +510,7 @@ class Scenario:
             pre.append(
                 _check(
                     "not_already_failed_over",
-                    False if ("failover_to_backup", tgt) in done else True,
+                    self.runtime["function_location"][tgt] == fn["primary_asset"],
                     "function is on its primary.",
                 )
             )
@@ -631,88 +649,219 @@ class Scenario:
             "decisions": decisions,
         }
 
-    def execute_action(self, action: str, target: str | None, assume_done: list[str] | None = None) -> dict[str, Any]:
-        """Apply an already-authorized action to simulated state and verify it."""
-        simulation = self.simulate_response(action, target, assume_done)
+    def threat_targets(self, field):
+        return list(dict.fromkeys(target for finding in self.findings["findings"]
+                                  if finding["kind"] == "threat" for target in finding.get(field, [])))
+
+    def endpoint_flows(self, hostname):
+        return {target for target in self.threat_targets("related_flows")
+                if hostname in (self.flows[target]["src_host"], self.flows[target]["dst_host"])}
+
+    def compare_response_plans(self) -> dict[str, Any]:
+        """Rank plans for the supplied case by projected coverage and disruption."""
+        probes = self.observe_threats()
+        outstanding = {target for target, observation in probes.items() if observation["allowed"]}
+        choices = []
+        for field, actions in (("related_flows", FLOW_ACTIONS), ("affected_accounts", ("disable_account",))):
+            for target in self.threat_targets(field):
+                if target in outstanding:
+                    choices.append([(None, target), *((action, target) for action in actions if action in self.policy["actions"])])
+        failed_controls = {(record["action"], record["target"]) for record in self.executions.values()
+                           if not record["result"]["verification"]["verified"]}
+        plans = []
+
+        def evaluate(name, steps):
+            assumed = []
+            evaluations = []
+            projected = set()
+            disruption = 0
+            for action, target in steps:
+                simulation = self.simulate_response(action, target, assumed)
+                evaluations.append({"action": action, "target": target, "verdict": simulation["verdict"],
+                                    "reasons": simulation["reasons"],
+                                    "approval_role": simulation["approval_required"],
+                                    "impact": simulation["mission_impact"]})
+                if (action, target) in failed_controls or (
+                    action in FLOW_ACTIONS and any((previous, target) in failed_controls for previous in FLOW_ACTIONS)
+                ):
+                    evaluations[-1]["verdict"] = "observed_ineffective"
+                    evaluations[-1]["reasons"] = ["A scoped control for this target failed verification. Review before retry."]
+                if evaluations[-1]["verdict"] != "allowed":
+                    break
+                assumed.append(f"{action}:{target}")
+                disruption += simulation["disruption_rank"]
+                if action == "block_network_flow":
+                    disruption += self.profile["legitimate_scope_penalty"].get(target, 0)
+                if action == "isolate_endpoint":
+                    projected.update(self.endpoint_flows(target))
+                elif target in probes:
+                    projected.add(target)
+            allowed = all(step["verdict"] == "allowed" for step in evaluations)
+            remaining = sorted(outstanding - projected)
+            return {"name": name, "steps": evaluations, "allowed": allowed,
+                    "projected_residual": remaining, "disruption_score": disruption,
+                    "effective": allowed and not remaining}
+
+        for combination in product(*choices):
+            steps = [(action, target) for action, target in combination if action and target in outstanding]
+            # Each observed target has one choice. Avoid duplicates when it is already contained.
+            if any(action and target not in outstanding for action, target in combination):
+                continue
+            plans.append(evaluate("targeted_containment" if steps else "continue_monitoring", steps))
+        identities = [("disable_account", target) for target in self.threat_targets("affected_accounts")
+                      if target in outstanding and "disable_account" in self.policy["actions"]]
+        if "isolate_endpoint" in self.policy["actions"]:
+            for hostname in self.threat_targets("affected_assets"):
+                isolate = [("isolate_endpoint", hostname), *identities]
+                plans.append(evaluate("immediate_isolation", isolate))
+                failover = [("failover_to_backup", fid) for fid in self._safety_functions_depending_on_device(hostname)
+                            if "failover_to_backup" in self.policy["actions"] and self.functions[fid]["backup_asset"]
+                            and self.runtime["function_location"][fid] != self.functions[fid]["backup_asset"]]
+                plans.append(evaluate("failover_then_isolate", [*failover, *isolate]))
+        effective = [plan for plan in plans if plan["effective"]]
+        recommendation = min(effective, key=lambda plan: plan["disruption_score"], default=None)
+        alternatives = [plan for plan in plans if plan["name"] != "targeted_containment"]
+        for action in ("block_network_flow", "restrict_network_flow", "disable_account"):
+            candidates = [plan for plan in plans if len(plan["steps"]) == 1 and plan["steps"][0]["action"] == action]
+            alternatives.extend(candidates)
+        return {"recommended_plan": recommendation, "alternatives": alternatives,
+                "candidate_count": len(plans), "observed_probes": probes,
+                "residual_host_risk": "The workstation remains suspected compromised until investigated and remediated.",
+                "method": "Minimize summed policy disruption among safe plans covering observed attack paths. "
+                          "Apply the environment penalty for losing legitimate traffic scope. "
+                          "Coverage is predicted and must be verified after execution."}
+
+    def observe_cooling(self, switch_gap: int = 0) -> dict[str, Any]:
+        """Sample a 150-second simulated observation window in 15-second increments."""
+        fid = self.monitor
+        fn = self.functions[fid]
+        source = self.runtime["function_location"][fid]
+        on_backup = source == fn["backup_asset"]
+        active_roles = ("backup" if on_backup else "primary", "shared")
+        dependencies = [d for d in self.dependencies if d["function_id"] == fid and d["role"] in active_roles]
+        available = {"device": lambda key: not self.runtime["device_isolated"][key],
+                     "account": self.runtime["account_enabled"].__getitem__,
+                     "flow": lambda key: self.runtime["flow_status"][key] == "active"}
+        ready = all(available[d["requires_type"]](d["requires_id"]) for d in dependencies)
+        ready = ready and (not on_backup or (self._backup_health(fid)[0] and self.fault != "backup_silent"))
+        limit = int(fn["max_tolerable_gap_s"])
+        # Leave time to restore the previous path before exceeding the limit.
+        abort_at = min(90, max(0, limit - 17))
+        received = [t for t in range(0, 151, self.profile["poll_interval_s"]) if ready and t >= switch_gap]
+        aborted = not received or received[0] > abort_at
+        window = abort_at if aborted else 150
+        if aborted:
+            received = []
+        # Include the interval from the last pre-action poll and the end of the window.
+        boundaries = [-2, *received, window]
+        max_gap = max(b - a for a, b in zip(boundaries, boundaries[1:]))
+        return {"source": source, "window_s": window, "poll_received_at_s": received,
+                "aborted_for_missing_telemetry": aborted, "max_gap_s": max_gap,
+                "limit_s": limit, "healthy": not aborted and max_gap <= limit}
+
+    def observe_threats(self) -> dict[str, Any]:
+        """Exercise simulated hostile traffic and fresh logins against current controls."""
+        probes = {}
+        for flow in self.threat_targets("related_flows"):
+            row = self.flows[flow]
+            status = self.runtime["flow_status"][flow]
+            reachable = not any(self.runtime["device_isolated"].get(row[k], False) for k in ("src_host", "dst_host"))
+            passes = reachable and (status == "active" or self.fault == f"ineffective_{flow}")
+            probes[flow] = {"hostile_attempts": 3, "allowed": 3 if passes else 0,
+                            "legitimate_scope_available": reachable and status != "blocked"}
+        for account in self.threat_targets("affected_accounts"):
+            probes[account] = {"hostile_attempts": 3, "allowed": 3 if self.runtime["account_enabled"][account] else 0}
+        return probes
+
+    def execute_action(self, action: str, target: str | None, execution_id: str) -> dict[str, Any]:
+        """Apply an authorized action to the simulator and observe its outcomes."""
+        simulation = self.simulate_response(action, target)
         if simulation["verdict"] != "allowed":
             raise ResponseError(f"Execution blocked: {simulation['verdict']}: {' '.join(simulation['reasons'])}")
-        snapshot = {
-            "flow_status": dict(self.runtime["flow_status"]),
-            "account_enabled": dict(self.runtime["account_enabled"]),
-            "device_isolated": dict(self.runtime["device_isolated"]),
-            "function_location": dict(self.runtime["function_location"]),
-        }
         target = simulation["target"]
         if action == "block_network_flow":
-            self.runtime["flow_status"][target] = "blocked"
+            changes = [("flow_status", target, "blocked")]
         elif action == "restrict_network_flow":
-            self.runtime["flow_status"][target] = "restricted"
+            changes = [("flow_status", target, "restricted")]
         elif action == "disable_account":
-            self.runtime["account_enabled"][target] = False
+            changes = [("account_enabled", target, False)]
         elif action == "isolate_endpoint":
-            self.runtime["device_isolated"][target] = True
-        elif action == "failover_to_backup":
-            self.runtime["function_location"][target] = self.functions[target]["backup_asset"]
-            for flow_id, flow in self.flows.items():
-                if flow["function_id"] == target and flow["src_host"] == self.functions[target]["backup_asset"]:
-                    self.runtime["flow_status"][flow_id] = "active"
-        execution_id = f"EXE-{self._next_execution_id:04d}"
-        self._next_execution_id += 1
-        self.executions[execution_id] = {
-            "execution_id": execution_id,
-            "action": action,
-            "target": target,
-            "snapshot": snapshot,
-            "status": "executed",
-            "verified": False,
-        }
-        verification = self.verify_execution(execution_id)
-        self.executions[execution_id]["verified"] = verification["verified"]
+            changes = [("device_isolated", target, True)]
+        else:
+            backup = self.functions[target]["backup_asset"]
+            changes = [("function_location", target, backup)]
+            changes += [("flow_status", flow_id, "active") for flow_id, flow in self.flows.items()
+                        if flow["function_id"] == target and flow["src_host"] == backup]
+        patch = []
+        for field, key, value in changes:
+            patch.append({"field": field, "key": key, "before": self.runtime[field][key], "after": value})
+            self.runtime[field][key] = value
+        self.executions[execution_id] = {"execution_id": execution_id, "action": action, "target": target,
+                                         "patch": patch, "status": "executed"}
+        switch_gap = int(self.functions[target]["failover_time_s"]) if action == "failover_to_backup" else 0
+        verification = self.verify_execution(execution_id, switch_gap)
+        result = {"execution_id": execution_id, "status": "verified", "verification": verification}
         if not verification["verified"]:
-            self.rollback_action(execution_id)
-            raise ResponseError(f"Execution verification failed for {execution_id}; state was rolled back.")
-        return {
-            "execution_id": execution_id,
-            "status": "executed",
-            "decision": "APPROVED",
-            "verification": verification,
-            "predicted_state_changes": simulation["predicted_state_changes"],
-        }
+            result["status"] = "verification_failed"
+            try:
+                result["recovery"] = self.rollback_action(execution_id)
+                if (verification["cooling"]["aborted_for_missing_telemetry"]
+                        and "poll_received_at_s" in result["recovery"]["cooling"]):
+                    recovery_cooling = result["recovery"]["cooling"]
+                    # The simulator starts its recovery observations at the abort time.
+                    recovery_cooling["gap_through_recovery_s"] = (
+                        verification["cooling"]["max_gap_s"] + recovery_cooling["poll_received_at_s"][0]
+                    )
+                result["status"] = "rolled_back"
+            except ResponseError as exc:
+                result["recovery"] = {"status": "escalation_required", "reason": str(exc)}
+        self.executions[execution_id]["result"] = result
+        return result
 
-    def verify_execution(self, execution_id: str) -> dict[str, Any]:
+    def verify_execution(self, execution_id: str, switch_gap: int = 0) -> dict[str, Any]:
         record = self.executions.get(execution_id)
         if record is None:
             raise ResponseError(f"No execution named '{execution_id}'.")
         action, target = record["action"], record["target"]
-        if action == "block_network_flow":
-            verified = self.runtime["flow_status"][target] == "blocked"
-            observed = self.runtime["flow_status"][target]
-        elif action == "restrict_network_flow":
-            verified = self.runtime["flow_status"][target] == "restricted"
-            observed = self.runtime["flow_status"][target]
-        elif action == "disable_account":
-            verified = not self.runtime["account_enabled"][target]
-            observed = "disabled" if verified else "enabled"
-        elif action == "isolate_endpoint":
-            verified = self.runtime["device_isolated"][target]
-            observed = "isolated" if verified else "reachable"
-        elif action == "failover_to_backup":
-            verified = self.runtime["function_location"][target] == self.functions[target]["backup_asset"]
-            observed = self.runtime["function_location"][target]
+        cooling = self.observe_cooling(switch_gap)
+        probes = self.observe_threats()
+        configuration_ok = all(self.runtime[c["field"]][c["key"]] == c["after"] for c in record["patch"])
+        if action == "isolate_endpoint":
+            # Probe reachability on the endpoint's non-management flows.
+            containment_ok = all(probes[flow]["allowed"] == 0 for flow in self.endpoint_flows(target))
+        elif target in probes:
+            containment_ok = probes[target]["allowed"] == 0
+            if action == "restrict_network_flow":
+                containment_ok = containment_ok and probes[target]["legitimate_scope_available"]
         else:
-            raise ResponseError(f"'{action}' cannot be verified.")
-        return {"execution_id": execution_id, "verified": verified, "observed_state": observed}
+            containment_ok = True
+        return {"execution_id": execution_id, "verified": configuration_ok and containment_ok and cooling["healthy"]
+                and record["status"] == "executed", "configuration_applied": configuration_ok,
+                "targeted_activity_stopped": containment_ok, "cooling": cooling, "probes": probes}
 
     def rollback_action(self, execution_id: str) -> dict[str, Any]:
         record = self.executions.get(execution_id)
         if record is None:
             raise ResponseError(f"No execution named '{execution_id}'.")
         if record["status"] == "rolled_back":
-            return {"execution_id": execution_id, "status": "rolled_back", "decision": "APPROVED"}
-        for key, value in record["snapshot"].items():
-            self.runtime[key] = dict(value)
+            return record["recovery"]
+        patch = record["patch"]
+        for change in patch:
+            if self.runtime[change["field"]][change["key"]] != change["after"]:
+                raise ResponseError("Rollback conflicts with a later change. Escalate to the operator.")
+        for change in patch:
+            self.runtime[change["field"]][change["key"]] = change["before"]
+        cooling = self.observe_cooling()
+        if not cooling["healthy"]:
+            for change in patch:
+                self.runtime[change["field"]][change["key"]] = change["after"]
+            raise ResponseError("Rollback would interrupt the protected mission function. Escalate to the operator.")
         record["status"] = "rolled_back"
-        return {"execution_id": execution_id, "status": "rolled_back", "decision": "APPROVED"}
+        result = {"execution_id": execution_id, "status": "rolled_back", "cooling": cooling,
+                  "probes": self.observe_threats(),
+                  "restored": [{"field": c["field"], "key": c["key"], "value": c["before"]} for c in patch]}
+        record["recovery"] = result
+        return result
 
     def list_response_options(self, case_id: str | None = None, assume_done: list[str] | None = None) -> dict[str, Any]:
         self._check_case(case_id)
@@ -734,7 +883,7 @@ class Scenario:
         seen: set[tuple[str, str | None]] = set(done)  # steps already assumed are not options
         options = []
         for a, t in cands:
-            if (a, t) in seen:
+            if a not in self.policy["actions"] or (a, t) in seen:
                 continue
             seen.add((a, t))
             sim = self.simulate_response(a, t, assume_done)

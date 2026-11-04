@@ -1,0 +1,2 @@
+alert http any any -> any any (msg:"BRA lab simulated C2"; flow:established,to_server; http.uri; content:"/c2"; sid:9900004; rev:1;)
+alert http any any -> any any (msg:"BRA lab simulated lateral movement"; flow:established,to_server; http.uri; content:"/lateral"; sid:9900005; rev:1;)
