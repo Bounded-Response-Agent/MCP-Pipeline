@@ -61,7 +61,7 @@ build_branch() {
     local branch="$1" worktree="$2" dest="$3"
 
     echo "=== Building docs for ${branch} ==="
-    git fetch origin "$branch"
+    git fetch origin "refs/heads/${branch}:refs/remotes/origin/${branch}"
     git worktree remove --force "$worktree" 2>/dev/null || true
     rm -rf "$worktree"
     git worktree add --detach "$worktree" "origin/${branch}"
@@ -75,6 +75,11 @@ build_branch() {
     )
 }
 
+has_remote_branch() {
+    local branch="$1"
+    git ls-remote --exit-code --heads origin "$branch" >/dev/null 2>&1
+}
+
 rm -rf "${OUTPUT_DIR:?}"/*
 
 # v2 (main) at the root, then mirrored to /v2/ from the same build, then v1
@@ -83,6 +88,10 @@ rm -rf "${OUTPUT_DIR:?}"/*
 build_branch main "$V2_WORKTREE" "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR/v2"
 cp -a "$V2_WORKTREE/site/." "$OUTPUT_DIR/v2/"
-build_branch v1.x "$V1_WORKTREE" "$OUTPUT_DIR/v1"
+if has_remote_branch v1.x; then
+    build_branch v1.x "$V1_WORKTREE" "$OUTPUT_DIR/v1"
+else
+    echo "=== Skipping docs for v1.x (origin/v1.x not found) ==="
+fi
 
 echo "=== Combined docs built at $OUTPUT_DIR ==="
